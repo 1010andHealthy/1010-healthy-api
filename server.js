@@ -2,7 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { Resend } = require('resend');
+let Resend;
+try { Resend = require('resend').Resend; } catch(e) { console.warn('Resend not installed'); }
 
 const app = express();
 const PORT = process.env.PORT || 3001;
