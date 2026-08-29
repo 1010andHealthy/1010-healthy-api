@@ -121,7 +121,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
         : undefined,
       shipping_options: shippingOptions,
       // Stripe Tax — calculates applicable sales tax automatically if enabled on your Stripe account
-      automatic_tax: { enabled: true },
+      automatic_tax: { enabled: false },
       // Return URL shown after successful payment
       return_url: `${process.env.CLIENT_URL}/shop/order-confirmation?session_id={CHECKOUT_SESSION_ID}`,
       // Pre-fill customer email if provided
