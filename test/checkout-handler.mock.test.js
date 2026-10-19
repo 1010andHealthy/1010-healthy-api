@@ -8,10 +8,10 @@ const policy = require('../checkout-policy');
 const ids = [...policy.ALLOWED_PRICE_IDS];
 const priceCents = new Map([
   [ids[0], 12500], [ids[1], 12501], [ids[2], 14000],
-  [ids[3], 15000], [ids[4], 10000]
+  [ids[3], 15000], [ids[4], 10000], ['price_1U9pFPGaIkBjCnN2doJXxoX9', 6000]
 ]);
 
-function harness({ geocoding = 'local', couponValid = true } = {}) {
+function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0 } = {}) {
   const routes = new Map();
   const app = {
     use() {},
@@ -27,8 +27,15 @@ function harness({ geocoding = 'local', couponValid = true } = {}) {
     prices: { retrieve: async id => ({
       id, currency: 'usd', active: true, type: 'one_time', unit_amount: priceCents.get(id) ?? 10000
     }) },
-    coupons: { retrieve: async id => ({
+    coupons: { retrieve: async id => id === 'BABYGIRL37' ? ({
+      id, valid: babyCouponValid, percent_off: 37, duration: 'once',
+      max_redemptions: 1, times_redeemed: babyTimesRedeemed
+    }) : ({
       id, valid: couponValid, percent_off: 15, duration: 'once'
+    }) },
+    promotionCodes: { retrieve: async id => ({
+      id, code:'BABYGIRL37', active: babyPromoActive,
+      max_redemptions:1, times_redeemed:babyTimesRedeemed
     }) },
     checkout: { sessions: {
       create: async params => {
@@ -212,4 +219,53 @@ test('ZIP mismatches and PO boxes are rejected',async()=>{
 test('valid ZIP+4 remains eligible when geocoder returns the 5-digit ZIP',async()=>{
   const h=harness({geocoding:'local'});const r=await h.submit(local('Lafayette','47901-1234'));
   assert.equal(r.statusCode,200);assert.equal(cents(r),0);
+});
+
+const vinaliPriceId = 'price_1U9pFPGaIkBjCnN2doJXxoX9';
+test('BABYGIRL37 gives 37% off exactly two bottles of Vińali, with $8.95 shipping',async()=>{
+  const h=harness();
+  const r=await h.submit({items:[{priceId:vinaliPriceId,quantity:2}],fulfillment:'ship',discountCode:'babygirl37'});
+  assert.equal(r.statusCode,200);
+  assert.equal(r.session.line_items[0].quantity,2);
+  assert.equal(r.session.discounts[0].promotion_code,'promo_1USJxnGaIkBjCnN227OlEj6I');
+  assert.equal(cents(r),895);
+  assert.equal(r.session.allow_promotion_codes,undefined);
+  assert.equal(h.sessions.length,1);
+});
+test('BABYGIRL37 is valid for free local delivery of exactly two bottles',async()=>{
+  const r=await harness().submit({
+    items:[{priceId:vinaliPriceId,quantity:2}],
+    fulfillment:'local_delivery',discountCode:'BABYGIRL37',
+    deliveryAddress:{line1:'765 Main St',city:'Lafayette',state:'IN',postalCode:'47901'}
+  });
+  assert.equal(r.statusCode,200);
+  assert.equal(cents(r),0);
+});
+test('BABYGIRL37 rejects other products, one bottle, three bottles, and mixed carts',async()=>{
+  const badCarts=[
+    [{priceId:vinaliPriceId,quantity:1}],
+    [{priceId:vinaliPriceId,quantity:3}],
+    [{priceId:ids[0],quantity:2}],
+    [{priceId:vinaliPriceId,quantity:2},{priceId:ids[0],quantity:1}],
+  ];
+  for (const items of badCarts) {
+    const h=harness();
+    const r=await h.submit({items,fulfillment:'ship',discountCode:'BABYGIRL37'});
+    assert.equal(r.statusCode,400);
+    assert.match(r.response.error,/exactly two bottles/i);
+    assert.equal(h.sessions.length,0);
+  }
+});
+test('BABYGIRL37 rejects inactive, expired or redeemed coupons/promotion codes',async()=>{
+  for(const props of [
+    {babyCouponValid:false},
+    {babyPromoActive:false},
+    {babyTimesRedeemed:1},
+  ]){
+    const h=harness(props);
+    const r=await h.submit({items:[{priceId:vinaliPriceId,quantity:2}],fulfillment:'ship',discountCode:'BABYGIRL37'});
+    assert.equal(r.statusCode,400);
+    assert.match(r.response.error,/already been used|no longer available/);
+    assert.equal(h.sessions.length,0);
+  }
 });
