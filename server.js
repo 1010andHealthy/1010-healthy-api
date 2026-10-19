@@ -44,21 +44,28 @@ const { validateItems, shippingOptions, isLocalDelivery } = require('./checkout-
 async function verifyLocalDeliveryAddress(address) {
   if (!process.env.GOOGLE_MAPS_GEOCODING_API_KEY) throw new Error('geocoding_not_configured');
   if (!address || typeof address !== 'object') return false;
-  const { line1, city, state, postalCode } = address;
+  const { line1, line2, city, state, postalCode } = address;
   if (![line1,city,state,postalCode].every(x => typeof x === 'string' && x.trim() && x.length < 150)) return false;
+  if (line2 != null && (typeof line2 !== 'string' || line2.length > 150)) return false;
+  if (!/^\\d{5}(-\\d{4})?$/.test(postalCode.trim())) return false;
+  if (!/^(IN|Indiana)$/i.test(state.trim())) return false;
+  if (/\\bP\\s*\\.?\\s*O\\s*\\.?\\s*Box\\b/i.test(line1)) return false;
+  const postalFive = postalCode.trim().slice(0,5);
   const q = new URLSearchParams({address:[line1,city,state,postalCode,'USA'].join(', '),key:process.env.GOOGLE_MAPS_GEOCODING_API_KEY});
   const response = await fetch('https://maps.googleapis.com/maps/api/geocode/json?'+q,{signal:AbortSignal.timeout(7000)});
   if (!response.ok) throw new Error('geocoding_unavailable');
   const data = await response.json();
-  if (data.status !== 'OK') return false;
+  if (data.status === 'ZERO_RESULTS') return false;
+  if (data.status !== 'OK' || !Array.isArray(data.results)) throw new Error('geocoding_error');
   return data.results.some(r => {
+    if (r.partial_match) return false;
     const components=r.address_components||[];
     const part=t=>components.find(c=>c.types.includes(t));
     return ['ROOFTOP','RANGE_INTERPOLATED'].includes(r.geometry?.location_type)
       && part('administrative_area_level_1')?.short_name==='IN'
       && part('country')?.short_name==='US'
-      && part('postal_code')?.long_name===postalCode.trim()
-      && part('street_number')
+      && part('postal_code')?.long_name?.slice(0,5)===postalFive
+      && !!part('street_number')
       && isLocalDelivery(r.geometry.location.lat,r.geometry.location.lng);
   });
 }
