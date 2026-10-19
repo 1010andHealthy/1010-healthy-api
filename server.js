@@ -125,7 +125,8 @@ app.post('/api/create-checkout-session', async (req, res) => {
     const params = {
       ui_mode: 'embedded', mode: 'payment',
       line_items: items.map(i => ({ price: i.priceId, quantity: i.quantity })),
-      discounts, allow_promotion_codes: false,
+      // Stripe defaults to no in-checkout promotion code entry. Do not combine discounts with allow_promotion_codes.
+      discounts,
       shipping_address_collection: fulfillment === 'ship' ? { allowed_countries: ['US'] } : undefined,
       shipping_options: shippingOptions(qualifyingCents, fulfillment),
       automatic_tax: { enabled: log.taxEnabled },
