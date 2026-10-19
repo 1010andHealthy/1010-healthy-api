@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const { checkoutShippingDetails } = require('./checkout-session-utils');
 let Resend;
 try { Resend = require('resend').Resend; } catch(e) { console.warn('Resend not installed'); }
 
@@ -170,7 +171,7 @@ app.get('/api/checkout-session/:sessionId', async (req, res) => {
       total_details: session.total_details,
       currency: session.currency,
       line_items: session.line_items?.data || [],
-      shipping: session.shipping_details,
+      shipping: checkoutShippingDetails(session),
       metadata: session.metadata,
     });
   } catch (err) {
@@ -258,7 +259,7 @@ async function handleCheckoutCompleted(session) {
   const customerName = session.customer_details?.name || 'Customer';
   const customerEmail = session.customer_details?.email || '';
   const fulfillment = session.metadata?.fulfillment_type || 'ship';
-  const shipping = session.shipping_details;
+  const shipping = checkoutShippingDetails(fullSession) || checkoutShippingDetails(session);
   const orderTotal = ((session.amount_total || 0) / 100).toFixed(2);
   const orderNotes = session.metadata?.order_notes || '';
   const phone = session.metadata?.customer_phone || '';
