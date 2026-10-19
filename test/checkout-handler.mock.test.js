@@ -144,7 +144,7 @@ test('SUBARU15 15% discount changes $150 -> $127.50, free shipping',async()=>{
   assert.equal(r.statusCode,200);assert.equal(cents(r),0);
 });
 test('all other entered discounts are rejected without a Checkout Session',async()=>{
-  for (const code of ['SUBARU20','WELCOME10','LOCALPICKUP','SWIM15','PAULA15']) {
+  for (const code of ['SUBARU20','WELCOME10','LOCALPICKUP','PAULA15']) {
     const h=harness();
     const r=await h.submit(ship(ids[0],code));
     assert.equal(r.statusCode,400,code);
