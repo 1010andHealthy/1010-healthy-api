@@ -99,20 +99,14 @@ app.post('/api/create-checkout-session', async (req, res) => {
     let discountCents = 0;
     let discounts;
     if (discountCode != null && String(discountCode).trim()) {
-      const code = String(discountCode).trim();
-      if (code.length > 100) return bad('invalid_discount', 'This discount code is not valid.');
-      const promos = await stripe.promotionCodes.list({ code, active: true, limit: 10 });
-      const promo = promos.data.find(p => p.code.toLowerCase() === code.toLowerCase());
-      if (!promo || !promo.coupon?.valid || promo.customer || promo.restrictions?.first_time_transaction ||
-          promo.restrictions?.minimum_amount || promo.restrictions?.minimum_amount_currency ||
-          promo.coupon?.applies_to?.products?.length || promo.coupon?.duration === 'repeating') {
-        return bad('unsupported_discount', 'This discount code is unavailable. Please check the code or contact us.');
+      const code = String(discountCode).trim().toUpperCase();
+      if (code !== 'SUBARU15') return bad('unsupported_discount', 'Only SUBARU15 is currently accepted.');
+      const coupon = await stripe.coupons.retrieve('eBftR5rn');
+      if (!coupon.valid || coupon.percent_off !== 15) {
+        return bad('inactive_discount', 'SUBARU15 is temporarily unavailable.');
       }
-      const coupon = promo.coupon;
-      if (coupon.percent_off != null) discountCents = Math.round(subtotalCents * coupon.percent_off / 100);
-      else if (coupon.amount_off != null && coupon.currency === 'usd') discountCents = Math.min(subtotalCents, coupon.amount_off);
-      else return bad('unsupported_coupon', 'This discount cannot be applied to this order.');
-      discounts = [{ promotion_code: promo.id }];
+      discountCents = Math.round(subtotalCents * 0.15);
+      discounts = [{ coupon: coupon.id }];
       log.discountCodeApplied = true;
     }
     const qualifyingCents = Math.max(0, subtotalCents - discountCents);
