@@ -1,0 +1,17 @@
+name: Verify deployed checkout providers (temporary review)
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Exercise live backend (unpaid Checkout Sessions, no payment attempts)
+        run: node test/production-smoke.mjs
