@@ -108,13 +108,33 @@ app.post('/api/create-checkout-session', async (req, res) => {
     let discounts;
     if (discountCode != null && String(discountCode).trim()) {
       const code = String(discountCode).trim().toUpperCase();
-      if (code !== 'SUBARU15') return bad('unsupported_discount', 'Only SUBARU15 is currently accepted.');
-      const coupon = await stripe.coupons.retrieve('eBftR5rn');
-      if (!coupon.valid || coupon.percent_off !== 15) {
-        return bad('inactive_discount', 'SUBARU15 is temporarily unavailable.');
+      if (code === 'SUBARU15') {
+        const coupon = await stripe.coupons.retrieve('eBftR5rn');
+        if (!coupon.valid || coupon.percent_off !== 15) {
+          return bad('inactive_discount', 'SUBARU15 is temporarily unavailable.');
+        }
+        discountCents = Math.round(subtotalCents * 0.15);
+        discounts = [{ coupon: coupon.id }];
+      } else if (code === 'BABYGIRL37') {
+        // Unique one-time offer. Never discount another product or an altered cart.
+        const vinaliPriceId = 'price_1U9pFPGaIkBjCnN2doJXxoX9';
+        if (items.length !== 1 || items[0].priceId !== vinaliPriceId || items[0].quantity !== 2) {
+          return bad('babygirl37_cart_restriction', 'BABYGIRL37 is valid only when your cart contains exactly two bottles of Vińali.');
+        }
+        const [coupon, promo] = await Promise.all([
+          stripe.coupons.retrieve('BABYGIRL37'),
+          stripe.promotionCodes.retrieve('promo_1USJxnGaIkBjCnN227OlEj6I'),
+        ]);
+        if (!coupon.valid || coupon.percent_off !== 37 || coupon.max_redemptions !== 1 ||
+            coupon.times_redeemed >= 1 || !promo.active || promo.code?.toUpperCase() !== 'BABYGIRL37' ||
+            promo.max_redemptions !== 1 || promo.times_redeemed >= 1) {
+          return bad('inactive_discount', 'BABYGIRL37 has already been used or is no longer available.');
+        }
+        discountCents = Math.round(subtotalCents * 0.37);
+        discounts = [{ promotion_code: promo.id }];
+      } else {
+        return bad('unsupported_discount', 'Only SUBARU15 or the eligible one-time BABYGIRL37 offer is accepted.');
       }
-      discountCents = Math.round(subtotalCents * 0.15);
-      discounts = [{ coupon: coupon.id }];
       log.discountCodeApplied = true;
     }
     const qualifyingCents = Math.max(0, subtotalCents - discountCents);
