@@ -280,7 +280,7 @@ async function handleCheckoutCompleted(session) {
   // Shipping address
   const addr = shipping?.address;
   const addressText = fulfillment === 'local_delivery'
-    ? 'FREE LOCAL DELIVERY — ' + (session.metadata?.delivery_address || 'Address missing') + ''
+    ? 'FREE LOCAL DELIVERY — ' + (session.metadata?.delivery_address || 'Address missing')
     : addr
       ? `${addr.line1}${addr.line2 ? ', ' + addr.line2 : ''}, ${addr.city}, ${addr.state} ${addr.postal_code}`
       : 'Address not provided';
@@ -335,7 +335,7 @@ async function handleCheckoutCompleted(session) {
       <!-- Fulfillment -->
       <div style="background:#f7f7f7;border-radius:8px;padding:16px 20px;margin-bottom:16px;">
         <h3 style="margin:0 0 12px;font-size:14px;color:#333;text-transform:uppercase;letter-spacing:1px;">
-          ${fulfillment === 'pickup' ? '🚗 Local Delivery' : '🚚 Ship To'}
+          ${fulfillment === 'local_delivery' ? '🚗 Local Delivery' : '🚚 Ship To'}
         </h3>
         <p style="margin:4px 0;font-size:14px;color:#444;">${addressText}</p>
       </div>
@@ -409,10 +409,10 @@ async function handleCheckoutCompleted(session) {
 
       <div style="background:#f7f7f7;border-radius:8px;padding:16px 20px;margin-bottom:20px;">
         <h3 style="margin:0 0 8px;font-size:14px;color:#333;">
-          ${fulfillment === 'pickup' ? '🚗 Local Delivery Details' : '🚚 Shipping To'}
+          ${fulfillment === 'local_delivery' ? '🚗 Local Delivery Details' : '🚚 Shipping To'}
         </h3>
         <p style="margin:0;font-size:14px;color:#444;">${addressText}</p>
-        ${fulfillment === 'pickup'
+        ${fulfillment === 'local_delivery'
           ? '<p style="margin:8px 0 0;font-size:13px;color:#666;">Brandon will contact you to arrange delivery.</p>'
           : '<p style="margin:8px 0 0;font-size:13px;color:#666;">Orders typically ship within 1–3 business days. You\'ll receive tracking info by email.</p>'
         }
