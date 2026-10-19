@@ -193,7 +193,8 @@ app.post('/api/create-checkout-session', async (req, res) => {
         order_notes: metadata?.notes || '',
         source: '1010andhealthy.com',
       },
-      payment_method_types: ['card', 'link'],
+      // Card-only Checkout: do not request Link's accelerated verification flow.
+      payment_method_types: ['card'],
     };
     const session = await stripe.checkout.sessions.create(params);
     console.info(JSON.stringify({ ...log, result: 'created', sessionId: session.id }));
