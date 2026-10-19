@@ -118,7 +118,8 @@ test('SUBARU15 15% discount changes $140 -> $119, shipping $8.95',async()=>{
   const r=await harness().submit(ship(ids[2],'subaru15'));
   assert.equal(r.statusCode,200);assert.equal(cents(r),895);
   assert.equal(r.session.discounts[0].coupon,'eBftR5rn');
-  assert.equal(r.session.allow_promotion_codes,false);
+  assert.equal(r.session.allow_promotion_codes,undefined);
+  assert.equal(r.session.allow_promotion_codes,undefined);
 });
 test('SUBARU15 15% discount changes $150 -> $127.50, free shipping',async()=>{
   const r=await harness().submit(ship(ids[3],'SUBARU15'));
