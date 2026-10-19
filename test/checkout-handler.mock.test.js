@@ -121,6 +121,12 @@ const local = (city='Lafayette',postalCode='47901',line1='765 Main St')=>({
 });
 const cents = result => result.session?.shipping_options?.[0]?.shipping_rate_data?.fixed_amount?.amount;
 
+test('Checkout is card-only without Link authentication payment method',async()=>{
+  const result=await harness().submit(ship(ids[0]));
+  assert.equal(result.statusCode,200);
+  assert.deepEqual(Array.from(result.session.payment_method_types),['card']);
+  assert.ok(!result.session.payment_method_types.includes('link'));
+});
 test('standard shipping uses one rate, $8.95 at exactly $125',async()=>{
   const h=harness(); const r=await h.submit(ship(ids[0]));
   assert.equal(r.statusCode,200); assert.equal(cents(r),895);
