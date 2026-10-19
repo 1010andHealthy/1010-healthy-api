@@ -1,0 +1,17 @@
+name: Unpaid BABYGIRL37 live backend audit
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  real-Stripe-babygirl37:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Verify real backend and Stripe without payment details
+        run: node test/babygirl37-audit.mjs
