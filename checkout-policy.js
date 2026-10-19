@@ -11,8 +11,19 @@ function validateItems(items) {
  }
 }
 function shippingOptions(qualifyingCents, fulfillment) {
- if (fulfillment === 'pickup') return undefined;
+ if (fulfillment === 'local_delivery') return [{shipping_rate_data:{type:'fixed_amount',fixed_amount:{amount:0,currency:'usd'},display_name:'Free local delivery (verified 15-mile area)'}}];
  const free = qualifyingCents > FREE_OVER_CENTS;
  return [{shipping_rate_data:{type:'fixed_amount',fixed_amount:{amount:free?0:STANDARD_CENTS,currency:'usd'},display_name:free?'Free standard shipping (orders over $125)':'Standard shipping (3–7 business days)',delivery_estimate:{minimum:{unit:'business_day',value:3},maximum:{unit:'business_day',value:7}},tax_behavior:'exclusive',tax_code:'txcd_92010001'}}];
 }
-module.exports={ALLOWED_PRICE_IDS,validateItems,shippingOptions};
+// Approximate downtown reference points; confirm exact centers before deployment.
+const CENTERS = [{lat:40.4173,lon:-86.8753},{lat:40.4259,lon:-86.9081}];
+function milesBetween(a,b) {
+ const rad=Math.PI/180, dLat=(b.lat-a.lat)*rad,dLon=(b.lon-a.lon)*rad;
+ const h=Math.sin(dLat/2)**2+Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dLon/2)**2;
+ return 3958.7613*2*Math.asin(Math.min(1,Math.sqrt(h)));
+}
+function isLocalDelivery(lat,lon) {
+ if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat< -90||lat>90||lon< -180||lon>180) return false;
+ return CENTERS.some(center=>milesBetween(center,{lat,lon})<=15);
+}
+module.exports={ALLOWED_PRICE_IDS,validateItems,shippingOptions,milesBetween,isLocalDelivery};
