@@ -8,10 +8,12 @@ const policy = require('../checkout-policy');
 const ids = [...policy.ALLOWED_PRICE_IDS];
 const priceCents = new Map([
   [ids[0], 12500], [ids[1], 12501], [ids[2], 14000],
-  [ids[3], 15000], [ids[4], 10000], ['price_1U9pFPGaIkBjCnN2doJXxoX9', 6000]
+  [ids[3], 15000], [ids[4], 10000], ['price_1U9pFPGaIkBjCnN2doJXxoX9', 6000],
+  ['price_1U9pFQGaIkBjCnN2nD8BYKvB', 6500],
+  ['price_1U9pFSGaIkBjCnN26JtUQLGm', 13000]
 ]);
 
-function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0 } = {}) {
+function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0, swimCouponValid = true, swimPromoActive = true, nowISO = null } = {}) {
   const routes = new Map();
   const app = {
     use() {},
@@ -30,10 +32,17 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
     coupons: { retrieve: async id => id === 'BABYGIRL37' ? ({
       id, valid: babyCouponValid, percent_off: 37, duration: 'once',
       max_redemptions: 1, times_redeemed: babyTimesRedeemed
+    }) : id === 'SWIM15_MAX2_20261024' ? ({
+      id, valid: swimCouponValid, percent_off:15, duration:'once',
+      max_redemptions:null, redeem_by:1792900800
     }) : ({
       id, valid: couponValid, percent_off: 15, duration: 'once'
     }) },
-    promotionCodes: { retrieve: async id => ({
+    promotionCodes: { retrieve: async id => id === 'promo_1USKOsGaIkBjCnN2Qb9VFXHh' ? ({
+      id, code:'SWIM15', active: swimPromoActive,
+      max_redemptions:null, expires_at:1792900800,
+      times_redeemed:0
+    }) : ({
       id, code:'BABYGIRL37', active: babyPromoActive,
       max_redemptions:1, times_redeemed:babyTimesRedeemed
     }) },
@@ -87,6 +96,7 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
       STRIPE_SECRET_KEY:'sk_mock', CLIENT_URL:'https://www.1010andhealthy.com',
       GOOGLE_MAPS_GEOCODING_API_KEY:'google_mock_key',
     }}, console:logger, URLSearchParams, AbortSignal, fetch:fakeFetch,
+    Date: nowISO === null ? Date : class extends Date { static now() { return Date.parse(nowISO); } },
   }, {filename:'server.js'});
   return {
     sessions,
@@ -134,11 +144,11 @@ test('SUBARU15 15% discount changes $150 -> $127.50, free shipping',async()=>{
   assert.equal(r.statusCode,200);assert.equal(cents(r),0);
 });
 test('all other entered discounts are rejected without a Checkout Session',async()=>{
-  for (const code of ['SUBARU20','WELCOME10','LOCALPICKUP','SWIM15','PAULA15']) {
+  for (const code of ['SUBARU20','WELCOME10','LOCALPICKUP','PAULA15']) {
     const h=harness();
     const r=await h.submit(ship(ids[0],code));
     assert.equal(r.statusCode,400,code);
-    assert.match(r.response.error,/SUBARU15/);
+    assert.match(r.response.error,/not supported/i);
     assert.equal(h.sessions.length,0);
   }
 });
@@ -268,4 +278,74 @@ test('BABYGIRL37 rejects inactive, expired or redeemed coupons/promotion codes',
     assert.match(r.response.error,/already been used|no longer available/);
     assert.equal(h.sessions.length,0);
   }
+});
+
+const max2PriceId = 'price_1U9pFQGaIkBjCnN2nD8BYKvB';
+const moaPriceId = 'price_1U9pFSGaIkBjCnN26JtUQLGm';
+const swimWindow = '2026-10-24T12:00:00-04:00';
+function swimCart(max2Quantity=1, extraItems=[], discountCode='SWIM15') {
+  return { items:[{priceId:max2PriceId,quantity:max2Quantity},...extraItems],fulfillment:'ship',discountCode };
+}
+test('SWIM15 applies 15% only to Max2.0 on October 24 and keeps shipping $8.95',async()=>{
+  const h=harness({nowISO:swimWindow});
+  const r=await h.submit(swimCart(2));
+  assert.equal(r.statusCode,200);
+  assert.equal(r.session.discounts[0].promotion_code,'promo_1USKOsGaIkBjCnN2Qb9VFXHh');
+  assert.equal(r.session.allow_promotion_codes,undefined);
+  assert.equal(cents(r),895); // $130 less $19.50 => $110.50; no free shipping
+});
+test('SWIM15 allows unlimited Max2.0 boxes and qualifying discounted subtotal gets free shipping',async()=>{
+  const h=harness({nowISO:swimWindow});
+  const r=await h.submit(swimCart(10));
+  assert.equal(r.statusCode,200);
+  assert.equal(r.session.line_items[0].quantity,10);
+  assert.equal(cents(r),0); // $650 less $97.50 => $552.50 > $125
+});
+test('SWIM15 mixed carts retain regular prices for other items and discount only Max2.0',async()=>{
+  const h=harness({nowISO:swimWindow});
+  const r=await h.submit(swimCart(1,[{priceId:moaPriceId,quantity:1}]));
+  assert.equal(r.statusCode,200); // $65 Max2.0 + $130 MOA, discount $9.75
+  assert.equal(cents(r),0); // $185.25 after discount, qualifies for free shipping
+  assert.equal(r.session.line_items.length,2);
+});
+test('SWIM15 rejects carts without any Max2.0',async()=>{
+  const h=harness({nowISO:swimWindow});
+  const r=await h.submit({items:[{priceId:moaPriceId,quantity:2}],fulfillment:'ship',discountCode:'SWIM15'});
+  assert.equal(r.statusCode,400);
+  assert.match(r.response.error,/only to Max2.0/i);
+  assert.equal(h.sessions.length,0);
+});
+test('SWIM15 rejects before start and on October 25, including exact boundary',async()=>{
+  for(const nowISO of ['2026-10-23T23:59:59-04:00','2026-10-25T00:00:00-04:00','2026-10-25T08:00:00-04:00']) {
+    const h=harness({nowISO});
+    const r=await h.submit(swimCart());
+    assert.equal(r.statusCode,400,nowISO);
+    assert.match(r.response.error,/October 24/i);
+    assert.equal(h.sessions.length,0);
+  }
+});
+test('SWIM15 accepts event start at midnight and final second before midnight',async()=>{
+  for(const nowISO of ['2026-10-24T00:00:00-04:00','2026-10-24T23:59:59-04:00']) {
+    const r=await harness({nowISO}).submit(swimCart());
+    assert.equal(r.statusCode,200,nowISO);
+    assert.equal(cents(r),895);
+  }
+});
+test('SWIM15 blocks inactive or inconsistent Stripe offer',async()=>{
+  for(const props of [{swimCouponValid:false},{swimPromoActive:false}]){
+    const h=harness({nowISO:swimWindow,...props});
+    const r=await h.submit(swimCart());
+    assert.equal(r.statusCode,400);
+    assert.match(r.response.error,/unavailable/i);
+    assert.equal(h.sessions.length,0);
+  }
+});
+test('SUBARU15 and BABYGIRL37 are unchanged by the event offer',async()=>{
+  const h=harness({nowISO:swimWindow});
+  const a=await h.submit(ship(ids[3],'SUBARU15'));
+  assert.equal(a.statusCode,200);
+  assert.equal(a.session.discounts[0].coupon,'eBftR5rn');
+  const b=await h.submit({items:[{priceId:vinaliPriceId,quantity:2}],fulfillment:'ship',discountCode:'BABYGIRL37'});
+  assert.equal(b.statusCode,200);
+  assert.equal(b.session.discounts[0].promotion_code,'promo_1USJxnGaIkBjCnN227OlEj6I');
 });
