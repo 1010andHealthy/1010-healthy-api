@@ -132,8 +132,39 @@ app.post('/api/create-checkout-session', async (req, res) => {
         }
         discountCents = Math.round(subtotalCents * 0.37);
         discounts = [{ promotion_code: promo.id }];
+      } else if (code === 'SWIM15') {
+        // Boilermaker Aquatics Swim-A-Thon, Oct 24 2026, midnight-to-midnight
+        // America/Indiana/Indianapolis (EDT, UTC-04:00 on event day).
+        const eventStart = Date.parse('2026-10-24T04:00:00Z');
+        const eventEnd = Date.parse('2026-10-25T04:00:00Z'); // exclusive
+        const now = Date.now();
+        if (now < eventStart || now >= eventEnd) {
+          return bad('swim15_outside_event', 'SWIM15 is valid only on October 24, 2026 (Indiana time).');
+        }
+        const max2PriceId = 'price_1U9pFQGaIkBjCnN2nD8BYKvB';
+        const eligibleSubtotalCents = items.reduce((sum, item) =>
+          sum + (item.priceId === max2PriceId ? priceById.get(item.priceId).unit_amount * item.quantity : 0), 0);
+        if (eligibleSubtotalCents === 0) {
+          return bad('swim15_product_required', 'SWIM15 applies only to Max2.0. Add at least one box to use it.');
+        }
+        const [coupon, promo] = await Promise.all([
+          stripe.coupons.retrieve('SWIM15_MAX2_20261024'),
+          stripe.promotionCodes.retrieve('promo_1USKOsGaIkBjCnN2Qb9VFXHh'),
+        ]);
+        if (!coupon.valid || coupon.percent_off !== 15 ||
+            coupon.redeem_by !== Math.floor(eventEnd / 1000) ||
+            coupon.max_redemptions != null ||
+            !promo.active || promo.code?.toUpperCase() !== 'SWIM15' ||
+            promo.expires_at !== Math.floor(eventEnd / 1000) ||
+            promo.max_redemptions != null) {
+          return bad('swim15_unavailable', 'SWIM15 is currently unavailable. Please contact us.');
+        }
+        // Discount only the eligible Max2.0 line items, not other cart products.
+        // Stripe independently restricts the coupon to the Max2.0 product.
+        discountCents = Math.round(eligibleSubtotalCents * 0.15);
+        discounts = [{ promotion_code: promo.id }];
       } else {
-        return bad('unsupported_discount', 'Only SUBARU15 or the eligible one-time BABYGIRL37 offer is accepted.');
+        return bad('unsupported_discount', 'This discount code is not supported.');
       }
       log.discountCodeApplied = true;
     }
