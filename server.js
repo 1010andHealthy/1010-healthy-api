@@ -32,7 +32,7 @@ app.use(express.json());
 
 // ─── HEALTH CHECK ────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: '10:10 and Healthy API', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', service: '10:10 and Healthy API', checkout_revision: 'local-delivery-v1', timestamp: new Date().toISOString() });
 });
 
 app.get('/', (req, res) => {
@@ -40,69 +40,101 @@ app.get('/', (req, res) => {
 });
 
 // ─── CREATE CHECKOUT SESSION ─────────────────────────────────────────────────
+const { validateItems, shippingOptions, isLocalDelivery } = require('./checkout-policy');
+async function verifyLocalDeliveryAddress(address) {
+  if (!process.env.GOOGLE_MAPS_GEOCODING_API_KEY) throw new Error('geocoding_not_configured');
+  if (!address || typeof address !== 'object') return false;
+  const { line1, line2, city, state, postalCode } = address;
+  if (![line1,city,state,postalCode].every(x => typeof x === 'string' && x.trim() && x.length < 150)) return false;
+  if (line2 != null && (typeof line2 !== 'string' || line2.length > 150)) return false;
+  if (!/^\d{5}(-\d{4})?$/.test(postalCode.trim())) return false;
+  if (!/^(IN|Indiana)$/i.test(state.trim())) return false;
+  if (/\bP\s*\.?\s*O\s*\.?\s*Box\b/i.test(line1)) return false;
+  const postalFive = postalCode.trim().slice(0,5);
+  const q = new URLSearchParams({address:[line1,city,state,postalCode,'USA'].join(', '),key:process.env.GOOGLE_MAPS_GEOCODING_API_KEY});
+  const response = await fetch('https://maps.googleapis.com/maps/api/geocode/json?'+q,{signal:AbortSignal.timeout(7000)});
+  if (!response.ok) throw new Error('geocoding_unavailable');
+  const data = await response.json();
+  if (data.status === 'ZERO_RESULTS') return false;
+  if (data.status !== 'OK' || !Array.isArray(data.results)) throw new Error('geocoding_error');
+  return data.results.some(r => {
+    if (r.partial_match) return false;
+    const components=r.address_components||[];
+    const part=t=>components.find(c=>c.types.includes(t));
+    return ['ROOFTOP','RANGE_INTERPOLATED'].includes(r.geometry?.location_type)
+      && part('administrative_area_level_1')?.short_name==='IN'
+      && part('country')?.short_name==='US'
+      && part('postal_code')?.long_name?.slice(0,5)===postalFive
+      && !!part('street_number')
+      && isLocalDelivery(r.geometry.location.lat,r.geometry.location.lng);
+  });
+}
+
 app.post('/api/create-checkout-session', async (req, res) => {
+  const requestId = require('crypto').randomUUID();
+  const log = { requestId, event: 'checkout_create', taxEnabled: process.env.TAX_ENABLED === 'true' };
+  const bad = (reason, message) => {
+    console.warn(JSON.stringify({ ...log, result: 'rejected', reason }));
+    return res.status(400).json({ error: message, requestId });
+  };
   try {
-    const { items, fulfillment, discountCode, customerEmail, metadata } = req.body;
-
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'No items provided.' });
+    const { items, fulfillment, discountCode, customerEmail, metadata, deliveryAddress } = req.body || {};
+    log.itemCount = Array.isArray(items) ? items.length : 0;
+    log.priceIds = Array.isArray(items) ? items.map(i => i?.priceId) : [];
+    try { validateItems(items); } catch (err) {
+      return bad(err.message, 'Your cart contains an invalid item. Please refresh and try again.');
     }
-
-    for (const item of items) {
-      if (!item.priceId || !item.quantity || item.quantity < 1) {
-        return res.status(400).json({ error: 'Invalid item: each item must have priceId and quantity >= 1.' });
+    if (fulfillment !== 'ship' && fulfillment !== 'local_delivery') {
+      return bad('invalid_fulfillment', 'Please select shipping or local delivery.');
+    }
+    if (fulfillment === 'local_delivery') {
+      let eligible;
+      try { eligible = await verifyLocalDeliveryAddress(deliveryAddress); }
+      catch (error) {
+        console.error(JSON.stringify({ ...log, event: 'delivery_verification_failed', reason: error.message }));
+        return res.status(503).json({error:'Delivery verification is temporarily unavailable. Please select shipping.',requestId});
       }
+      if (!eligible) return bad('ineligible_delivery_address','Address is outside the verified local delivery area. Please select shipping.');
     }
-
-    const lineItems = items.map(item => ({
-      price: item.priceId,
-      quantity: item.quantity,
-    }));
-
-    const shippingOptions = fulfillment === 'pickup'
-      ? [{ shipping_rate_data: {
-          type: 'fixed_amount',
-          fixed_amount: { amount: 0, currency: 'usd' },
-          display_name: 'Local Pickup — Market on Main, Lafayette IN',
-          delivery_estimate: {
-            minimum: { unit: 'business_day', value: 1 },
-            maximum: { unit: 'business_day', value: 3 },
-          },
-        }}]
-      : [
-          { shipping_rate_data: {
-              type: 'fixed_amount',
-              fixed_amount: { amount: 895, currency: 'usd' },
-              display_name: 'Standard Shipping (3–7 business days)',
-              delivery_estimate: {
-                minimum: { unit: 'business_day', value: 3 },
-                maximum: { unit: 'business_day', value: 7 },
-              },
-          }},
-          { shipping_rate_data: {
-              type: 'fixed_amount',
-              fixed_amount: { amount: 0, currency: 'usd' },
-              display_name: 'Free Standard Shipping (orders $75+)',
-              delivery_estimate: {
-                minimum: { unit: 'business_day', value: 3 },
-                maximum: { unit: 'business_day', value: 7 },
-              },
-          }},
-        ];
-
-    const sessionParams = {
-      ui_mode: 'embedded',
-      line_items: lineItems,
-      mode: 'payment',
-      shipping_address_collection: fulfillment === 'ship'
-        ? { allowed_countries: ['US'] }
-        : undefined,
-      shipping_options: shippingOptions,
-      automatic_tax: { enabled: false },
+    const prices = await Promise.all([...new Set(items.map(i => i.priceId))].map(id => stripe.prices.retrieve(id)));
+    const priceById = new Map(prices.map(p => [p.id, p]));
+    if (prices.some(p => !p.active || p.currency !== 'usd' || !Number.isSafeInteger(p.unit_amount) || p.type !== 'one_time')) {
+      return bad('inactive_or_invalid_price', 'A product in your cart is currently unavailable.');
+    }
+    const subtotalCents = items.reduce((sum, i) => sum + priceById.get(i.priceId).unit_amount * i.quantity, 0);
+    if (!Number.isSafeInteger(subtotalCents)) return bad('subtotal_overflow', 'Please reduce your cart quantity.');
+    let discountCents = 0;
+    let discounts;
+    if (discountCode != null && String(discountCode).trim()) {
+      const code = String(discountCode).trim().toUpperCase();
+      if (code !== 'SUBARU15') return bad('unsupported_discount', 'Only SUBARU15 is currently accepted.');
+      const coupon = await stripe.coupons.retrieve('eBftR5rn');
+      if (!coupon.valid || coupon.percent_off !== 15) {
+        return bad('inactive_discount', 'SUBARU15 is temporarily unavailable.');
+      }
+      discountCents = Math.round(subtotalCents * 0.15);
+      discounts = [{ coupon: coupon.id }];
+      log.discountCodeApplied = true;
+    }
+    const qualifyingCents = Math.max(0, subtotalCents - discountCents);
+    log.subtotalCents = subtotalCents;
+    log.discountCents = discountCents;
+    log.qualifyingCents = qualifyingCents;
+    log.shippingCents = fulfillment === 'local_delivery' ? 0 : (qualifyingCents > 12500 ? 0 : 895);
+    log.fulfillment = fulfillment;
+    const params = {
+      ui_mode: 'embedded', mode: 'payment',
+      line_items: items.map(i => ({ price: i.priceId, quantity: i.quantity })),
+      // Stripe defaults to no in-checkout promotion code entry. Do not combine discounts with allow_promotion_codes.
+      discounts,
+      shipping_address_collection: fulfillment === 'ship' ? { allowed_countries: ['US'] } : undefined,
+      shipping_options: shippingOptions(qualifyingCents, fulfillment),
+      automatic_tax: { enabled: log.taxEnabled },
       return_url: `${process.env.CLIENT_URL}/shop/order-confirmation?session_id={CHECKOUT_SESSION_ID}`,
       customer_email: customerEmail || undefined,
       metadata: {
-        fulfillment_type: fulfillment || 'ship',
+        fulfillment_type: fulfillment,
+        delivery_address: fulfillment === 'local_delivery' ? [deliveryAddress.line1,deliveryAddress.line2,deliveryAddress.city,deliveryAddress.state,deliveryAddress.postalCode].filter(Boolean).join(', ').slice(0,500) : '',
         customer_first_name: metadata?.firstName || '',
         customer_last_name: metadata?.lastName || '',
         customer_phone: metadata?.phone || '',
@@ -110,27 +142,13 @@ app.post('/api/create-checkout-session', async (req, res) => {
         source: '1010andhealthy.com',
       },
       payment_method_types: ['card', 'link'],
-      allow_promotion_codes: true,
     };
-
-    if (discountCode) {
-      try {
-        const promoCodes = await stripe.promotionCodes.list({ code: discountCode, active: true, limit: 1 });
-        if (promoCodes.data.length > 0) {
-          sessionParams.discounts = [{ promotion_code: promoCodes.data[0].id }];
-          delete sessionParams.allow_promotion_codes;
-        }
-      } catch (promoErr) {
-        console.warn('Promo code lookup failed:', promoErr.message);
-      }
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionParams);
-    res.json({ clientSecret: session.client_secret });
-
+    const session = await stripe.checkout.sessions.create(params);
+    console.info(JSON.stringify({ ...log, result: 'created', sessionId: session.id }));
+    return res.json({ clientSecret: session.client_secret });
   } catch (err) {
-    console.error('Error creating checkout session:', err);
-    res.status(500).json({ error: err.message || 'Failed to create checkout session.' });
+    console.error(JSON.stringify({ ...log, result: 'error', stripeErrorCode: err.code || null, stripeErrorParam: err.param || null, message: err.message }));
+    return res.status(500).json({ error: 'Checkout is temporarily unavailable. Please try again or contact us.', requestId });
   }
 });
 
@@ -147,6 +165,9 @@ app.get('/api/checkout-session/:sessionId', async (req, res) => {
       customer_email: session.customer_details?.email,
       customer_name: session.customer_details?.name,
       amount_total: session.amount_total,
+      amount_subtotal: session.amount_subtotal,
+      shipping_cost: session.shipping_cost,
+      total_details: session.total_details,
       currency: session.currency,
       line_items: session.line_items?.data || [],
       shipping: session.shipping_details,
@@ -263,8 +284,8 @@ async function handleCheckoutCompleted(session) {
 
   // Shipping address
   const addr = shipping?.address;
-  const addressText = fulfillment === 'pickup'
-    ? 'LOCAL PICKUP — Market on Main, 525 Main St, Lafayette, IN 47901'
+  const addressText = fulfillment === 'local_delivery'
+    ? 'FREE LOCAL DELIVERY — ' + (session.metadata?.delivery_address || 'Address missing')
     : addr
       ? `${addr.line1}${addr.line2 ? ', ' + addr.line2 : ''}, ${addr.city}, ${addr.state} ${addr.postal_code}`
       : 'Address not provided';
@@ -319,7 +340,7 @@ async function handleCheckoutCompleted(session) {
       <!-- Fulfillment -->
       <div style="background:#f7f7f7;border-radius:8px;padding:16px 20px;margin-bottom:16px;">
         <h3 style="margin:0 0 12px;font-size:14px;color:#333;text-transform:uppercase;letter-spacing:1px;">
-          ${fulfillment === 'pickup' ? '🏪 Local Pickup' : '🚚 Ship To'}
+          ${fulfillment === 'local_delivery' ? '🚗 Local Delivery' : '🚚 Ship To'}
         </h3>
         <p style="margin:4px 0;font-size:14px;color:#444;">${addressText}</p>
       </div>
@@ -393,11 +414,11 @@ async function handleCheckoutCompleted(session) {
 
       <div style="background:#f7f7f7;border-radius:8px;padding:16px 20px;margin-bottom:20px;">
         <h3 style="margin:0 0 8px;font-size:14px;color:#333;">
-          ${fulfillment === 'pickup' ? '🏪 Pickup Details' : '🚚 Shipping To'}
+          ${fulfillment === 'local_delivery' ? '🚗 Local Delivery Details' : '🚚 Shipping To'}
         </h3>
         <p style="margin:0;font-size:14px;color:#444;">${addressText}</p>
-        ${fulfillment === 'pickup'
-          ? '<p style="margin:8px 0 0;font-size:13px;color:#666;">Brandon will contact you to arrange a pickup time at Market on Main, 525 Main St, Lafayette, IN.</p>'
+        ${fulfillment === 'local_delivery'
+          ? '<p style="margin:8px 0 0;font-size:13px;color:#666;">Brandon will contact you to arrange delivery.</p>'
           : '<p style="margin:8px 0 0;font-size:13px;color:#666;">Orders typically ship within 1–3 business days. You\'ll receive tracking info by email.</p>'
         }
       </div>
