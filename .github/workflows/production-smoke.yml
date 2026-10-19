@@ -1,0 +1,30 @@
+name: Unpaid production checkout smoke test
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server.js'
+      - 'checkout-policy.js'
+      - 'test/production-smoke.mjs'
+      - '.github/workflows/production-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checkout-smoke:
+    name: Real Stripe and Google Maps checkout verification (unpaid)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run unpaid checkout smoke tests only after Railway reports new revision
+        env:
+          CHECKOUT_SMOKE_API: https://1010-healthy-api-production-b8c3.up.railway.app
+        run: node test/production-smoke.mjs
