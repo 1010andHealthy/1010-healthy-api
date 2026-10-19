@@ -40,69 +40,67 @@ app.get('/', (req, res) => {
 });
 
 // ─── CREATE CHECKOUT SESSION ─────────────────────────────────────────────────
+const { validateItems, shippingOptions } = require('./checkout-policy');
 app.post('/api/create-checkout-session', async (req, res) => {
+  const requestId = require('crypto').randomUUID();
+  const log = { requestId, event: 'checkout_create', taxEnabled: process.env.TAX_ENABLED === 'true' };
+  const bad = (reason, message) => {
+    console.warn(JSON.stringify({ ...log, result: 'rejected', reason }));
+    return res.status(400).json({ error: message, requestId });
+  };
   try {
-    const { items, fulfillment, discountCode, customerEmail, metadata } = req.body;
-
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'No items provided.' });
+    const { items, fulfillment, discountCode, customerEmail, metadata } = req.body || {};
+    log.itemCount = Array.isArray(items) ? items.length : 0;
+    log.priceIds = Array.isArray(items) ? items.map(i => i?.priceId) : [];
+    try { validateItems(items); } catch (err) {
+      return bad(err.message, 'Your cart contains an invalid item. Please refresh and try again.');
     }
-
-    for (const item of items) {
-      if (!item.priceId || !item.quantity || item.quantity < 1) {
-        return res.status(400).json({ error: 'Invalid item: each item must have priceId and quantity >= 1.' });
+    if (fulfillment !== 'ship' && fulfillment !== 'pickup') {
+      return bad('invalid_fulfillment', 'Please select shipping or local pickup.');
+    }
+    const prices = await Promise.all([...new Set(items.map(i => i.priceId))].map(id => stripe.prices.retrieve(id)));
+    const priceById = new Map(prices.map(p => [p.id, p]));
+    if (prices.some(p => !p.active || p.currency !== 'usd' || !Number.isSafeInteger(p.unit_amount) || p.type !== 'one_time')) {
+      return bad('inactive_or_invalid_price', 'A product in your cart is currently unavailable.');
+    }
+    const subtotalCents = items.reduce((sum, i) => sum + priceById.get(i.priceId).unit_amount * i.quantity, 0);
+    if (!Number.isSafeInteger(subtotalCents)) return bad('subtotal_overflow', 'Please reduce your cart quantity.');
+    let discountCents = 0;
+    let discounts;
+    if (discountCode != null && String(discountCode).trim()) {
+      const code = String(discountCode).trim();
+      if (code.length > 100) return bad('invalid_discount', 'This discount code is not valid.');
+      const promos = await stripe.promotionCodes.list({ code, active: true, limit: 10 });
+      const promo = promos.data.find(p => p.code.toLowerCase() === code.toLowerCase());
+      if (!promo || !promo.coupon?.valid || promo.customer || promo.restrictions?.first_time_transaction ||
+          promo.restrictions?.minimum_amount || promo.restrictions?.minimum_amount_currency ||
+          promo.coupon?.applies_to?.products?.length || promo.coupon?.duration === 'repeating') {
+        return bad('unsupported_discount', 'This discount code is unavailable. Please check the code or contact us.');
       }
+      const coupon = promo.coupon;
+      if (coupon.percent_off != null) discountCents = Math.round(subtotalCents * coupon.percent_off / 100);
+      else if (coupon.amount_off != null && coupon.currency === 'usd') discountCents = Math.min(subtotalCents, coupon.amount_off);
+      else return bad('unsupported_coupon', 'This discount cannot be applied to this order.');
+      discounts = [{ promotion_code: promo.id }];
+      log.discountCodeApplied = true;
     }
-
-    const lineItems = items.map(item => ({
-      price: item.priceId,
-      quantity: item.quantity,
-    }));
-
-    const shippingOptions = fulfillment === 'pickup'
-      ? [{ shipping_rate_data: {
-          type: 'fixed_amount',
-          fixed_amount: { amount: 0, currency: 'usd' },
-          display_name: 'Local Pickup — Market on Main, Lafayette IN',
-          delivery_estimate: {
-            minimum: { unit: 'business_day', value: 1 },
-            maximum: { unit: 'business_day', value: 3 },
-          },
-        }}]
-      : [
-          { shipping_rate_data: {
-              type: 'fixed_amount',
-              fixed_amount: { amount: 895, currency: 'usd' },
-              display_name: 'Standard Shipping (3–7 business days)',
-              delivery_estimate: {
-                minimum: { unit: 'business_day', value: 3 },
-                maximum: { unit: 'business_day', value: 7 },
-              },
-          }},
-          { shipping_rate_data: {
-              type: 'fixed_amount',
-              fixed_amount: { amount: 0, currency: 'usd' },
-              display_name: 'Free Standard Shipping (orders $75+)',
-              delivery_estimate: {
-                minimum: { unit: 'business_day', value: 3 },
-                maximum: { unit: 'business_day', value: 7 },
-              },
-          }},
-        ];
-
-    const sessionParams = {
-      ui_mode: 'embedded',
-      line_items: lineItems,
-      mode: 'payment',
-      shipping_address_collection: fulfillment === 'ship'
-        ? { allowed_countries: ['US'] }
-        : undefined,
-      shipping_options: shippingOptions,
-      automatic_tax: { enabled: false },
+    const qualifyingCents = Math.max(0, subtotalCents - discountCents);
+    log.subtotalCents = subtotalCents;
+    log.discountCents = discountCents;
+    log.qualifyingCents = qualifyingCents;
+    log.shippingCents = fulfillment === 'pickup' ? 0 : (qualifyingCents > 12500 ? 0 : 895);
+    log.fulfillment = fulfillment;
+    const params = {
+      ui_mode: 'embedded', mode: 'payment',
+      line_items: items.map(i => ({ price: i.priceId, quantity: i.quantity })),
+      discounts, allow_promotion_codes: false,
+      shipping_address_collection: fulfillment === 'ship' ? { allowed_countries: ['US'] } : undefined,
+      shipping_options: shippingOptions(qualifyingCents, fulfillment),
+      automatic_tax: { enabled: log.taxEnabled },
       return_url: `${process.env.CLIENT_URL}/shop/order-confirmation?session_id={CHECKOUT_SESSION_ID}`,
       customer_email: customerEmail || undefined,
       metadata: {
-        fulfillment_type: fulfillment || 'ship',
+        fulfillment_type: fulfillment,
         customer_first_name: metadata?.firstName || '',
         customer_last_name: metadata?.lastName || '',
         customer_phone: metadata?.phone || '',
@@ -110,27 +108,13 @@ app.post('/api/create-checkout-session', async (req, res) => {
         source: '1010andhealthy.com',
       },
       payment_method_types: ['card', 'link'],
-      allow_promotion_codes: true,
     };
-
-    if (discountCode) {
-      try {
-        const promoCodes = await stripe.promotionCodes.list({ code: discountCode, active: true, limit: 1 });
-        if (promoCodes.data.length > 0) {
-          sessionParams.discounts = [{ promotion_code: promoCodes.data[0].id }];
-          delete sessionParams.allow_promotion_codes;
-        }
-      } catch (promoErr) {
-        console.warn('Promo code lookup failed:', promoErr.message);
-      }
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionParams);
-    res.json({ clientSecret: session.client_secret });
-
+    const session = await stripe.checkout.sessions.create(params);
+    console.info(JSON.stringify({ ...log, result: 'created', sessionId: session.id }));
+    return res.json({ clientSecret: session.client_secret });
   } catch (err) {
-    console.error('Error creating checkout session:', err);
-    res.status(500).json({ error: err.message || 'Failed to create checkout session.' });
+    console.error(JSON.stringify({ ...log, result: 'error', stripeErrorCode: err.code || null, stripeErrorParam: err.param || null, message: err.message }));
+    return res.status(500).json({ error: 'Checkout is temporarily unavailable. Please try again or contact us.', requestId });
   }
 });
 
