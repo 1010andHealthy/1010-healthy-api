@@ -53,11 +53,13 @@ function harness({ geocoding = 'local', couponValid = true } = {}) {
       : geocoding;
     if (kind === 'unavailable') return { ok: false, status: 500 };
     if (kind === 'missing') return { ok: true, json: async () => ({ status: 'ZERO_RESULTS', results: [] }) };
+    if (kind === 'quota') return { ok: true, json: async () => ({ status: 'OVER_QUERY_LIMIT', results: [] }) };
     const location = kind === 'outside'
       ? { lat: 39.7684, lng: -86.1581 }
       : { lat: 40.4173, lng: -86.8753 };
     return { ok: true, json: async () => ({ status: 'OK', results: [{
-      address_components: components(kind),
+      address_components: components(kind === 'wrongzip' ? 'outside' : kind),
+      partial_match: kind === 'partial',
       geometry: {location_type: 'ROOFTOP', location},
     }] }) };
   }
@@ -189,4 +191,23 @@ test('tax stays off until registration; Stripe coupon inactive blocks SUBARU15',
   assert.equal(r.session.automatic_tax.enabled,false);
   const h2=harness({couponValid:false});const r2=await h2.submit(ship(ids[0],'SUBARU15'));
   assert.equal(r2.statusCode,400);assert.equal(h2.sessions.length,0);
+});
+
+test('partial-match geocoding is rejected instead of sending to an uncertain address',async()=>{
+  const h=harness({geocoding:'partial'});const r=await h.submit(local());
+  assert.equal(r.statusCode,400);assert.equal(h.sessions.length,0);
+});
+test('Google Maps quota or authorization outage is a 503, not outside radius',async()=>{
+  const h=harness({geocoding:'quota'});const r=await h.submit(local());
+  assert.equal(r.statusCode,503);assert.equal(h.sessions.length,0);
+});
+test('ZIP mismatches and PO boxes are rejected',async()=>{
+  for (const [mode,address] of [['wrongzip',local()],['local',local('Lafayette','47901','PO Box 123')]]) {
+    const h=harness({geocoding:mode});const r=await h.submit(address);
+    assert.equal(r.statusCode,400);assert.equal(h.sessions.length,0);
+  }
+});
+test('valid ZIP+4 remains eligible when geocoder returns the 5-digit ZIP',async()=>{
+  const h=harness({geocoding:'local'});const r=await h.submit(local('Lafayette','47901-1234'));
+  assert.equal(r.statusCode,200);assert.equal(cents(r),0);
 });
