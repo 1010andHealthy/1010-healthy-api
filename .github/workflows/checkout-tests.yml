@@ -22,3 +22,5 @@ jobs:
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run checkout regression suite (mocked Stripe / Maps)
         run: npm test
+      - name: Verify live legacy backend Stripe compatibility without charging
+        run: node test/legacy-backend-preflight.mjs
