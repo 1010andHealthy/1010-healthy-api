@@ -40,7 +40,29 @@ app.get('/', (req, res) => {
 });
 
 // ─── CREATE CHECKOUT SESSION ─────────────────────────────────────────────────
-const { validateItems, shippingOptions } = require('./checkout-policy');
+const { validateItems, shippingOptions, isLocalDelivery } = require('./checkout-policy');
+async function verifyLocalDeliveryAddress(address) {
+  if (!process.env.GOOGLE_MAPS_GEOCODING_API_KEY) throw new Error('geocoding_not_configured');
+  if (!address || typeof address !== 'object') return false;
+  const { line1, city, state, postalCode } = address;
+  if (![line1,city,state,postalCode].every(x => typeof x === 'string' && x.trim() && x.length < 150)) return false;
+  const q = new URLSearchParams({address:[line1,city,state,postalCode,'USA'].join(', '),key:process.env.GOOGLE_MAPS_GEOCODING_API_KEY});
+  const response = await fetch('https://maps.googleapis.com/maps/api/geocode/json?'+q,{signal:AbortSignal.timeout(7000)});
+  if (!response.ok) throw new Error('geocoding_unavailable');
+  const data = await response.json();
+  if (data.status !== 'OK') return false;
+  return data.results.some(r => {
+    const components=r.address_components||[];
+    const part=t=>components.find(c=>c.types.includes(t));
+    return ['ROOFTOP','RANGE_INTERPOLATED'].includes(r.geometry?.location_type)
+      && part('administrative_area_level_1')?.short_name==='IN'
+      && part('country')?.short_name==='US'
+      && part('postal_code')?.long_name===postalCode.trim()
+      && part('street_number')
+      && isLocalDelivery(r.geometry.location.lat,r.geometry.location.lng);
+  });
+}
+
 app.post('/api/create-checkout-session', async (req, res) => {
   const requestId = require('crypto').randomUUID();
   const log = { requestId, event: 'checkout_create', taxEnabled: process.env.TAX_ENABLED === 'true' };
@@ -49,14 +71,23 @@ app.post('/api/create-checkout-session', async (req, res) => {
     return res.status(400).json({ error: message, requestId });
   };
   try {
-    const { items, fulfillment, discountCode, customerEmail, metadata } = req.body || {};
+    const { items, fulfillment, discountCode, customerEmail, metadata, deliveryAddress } = req.body || {};
     log.itemCount = Array.isArray(items) ? items.length : 0;
     log.priceIds = Array.isArray(items) ? items.map(i => i?.priceId) : [];
     try { validateItems(items); } catch (err) {
       return bad(err.message, 'Your cart contains an invalid item. Please refresh and try again.');
     }
-    if (fulfillment !== 'ship' && fulfillment !== 'pickup') {
-      return bad('invalid_fulfillment', 'Please select shipping or local pickup.');
+    if (fulfillment !== 'ship' && fulfillment !== 'local_delivery') {
+      return bad('invalid_fulfillment', 'Please select shipping or local delivery.');
+    }
+    if (fulfillment === 'local_delivery') {
+      let eligible;
+      try { eligible = await verifyLocalDeliveryAddress(deliveryAddress); }
+      catch (error) {
+        console.error(JSON.stringify({ ...log, event: 'delivery_verification_failed', reason: error.message }));
+        return res.status(503).json({error:'Delivery verification is temporarily unavailable. Please select shipping.',requestId});
+      }
+      if (!eligible) return bad('ineligible_delivery_address','Address is outside the verified local delivery area. Please select shipping.');
     }
     const prices = await Promise.all([...new Set(items.map(i => i.priceId))].map(id => stripe.prices.retrieve(id)));
     const priceById = new Map(prices.map(p => [p.id, p]));
@@ -88,7 +119,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
     log.subtotalCents = subtotalCents;
     log.discountCents = discountCents;
     log.qualifyingCents = qualifyingCents;
-    log.shippingCents = fulfillment === 'pickup' ? 0 : (qualifyingCents > 12500 ? 0 : 895);
+    log.shippingCents = fulfillment === 'local_delivery' ? 0 : (qualifyingCents > 12500 ? 0 : 895);
     log.fulfillment = fulfillment;
     const params = {
       ui_mode: 'embedded', mode: 'payment',
@@ -101,6 +132,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
       customer_email: customerEmail || undefined,
       metadata: {
         fulfillment_type: fulfillment,
+        delivery_address: fulfillment === 'local_delivery' ? [deliveryAddress.line1,deliveryAddress.city,deliveryAddress.state,deliveryAddress.postalCode].join(', ').slice(0,500) : '',
         customer_first_name: metadata?.firstName || '',
         customer_last_name: metadata?.lastName || '',
         customer_phone: metadata?.phone || '',
@@ -247,8 +279,8 @@ async function handleCheckoutCompleted(session) {
 
   // Shipping address
   const addr = shipping?.address;
-  const addressText = fulfillment === 'pickup'
-    ? 'LOCAL PICKUP — Market on Main, 525 Main St, Lafayette, IN 47901'
+  const addressText = fulfillment === 'local_delivery'
+    ? 'FREE LOCAL DELIVERY — ' + (session.metadata?.delivery_address || 'Address missing') + ''
     : addr
       ? `${addr.line1}${addr.line2 ? ', ' + addr.line2 : ''}, ${addr.city}, ${addr.state} ${addr.postal_code}`
       : 'Address not provided';
@@ -303,7 +335,7 @@ async function handleCheckoutCompleted(session) {
       <!-- Fulfillment -->
       <div style="background:#f7f7f7;border-radius:8px;padding:16px 20px;margin-bottom:16px;">
         <h3 style="margin:0 0 12px;font-size:14px;color:#333;text-transform:uppercase;letter-spacing:1px;">
-          ${fulfillment === 'pickup' ? '🏪 Local Pickup' : '🚚 Ship To'}
+          ${fulfillment === 'pickup' ? '🚗 Local Delivery' : '🚚 Ship To'}
         </h3>
         <p style="margin:4px 0;font-size:14px;color:#444;">${addressText}</p>
       </div>
@@ -377,11 +409,11 @@ async function handleCheckoutCompleted(session) {
 
       <div style="background:#f7f7f7;border-radius:8px;padding:16px 20px;margin-bottom:20px;">
         <h3 style="margin:0 0 8px;font-size:14px;color:#333;">
-          ${fulfillment === 'pickup' ? '🏪 Pickup Details' : '🚚 Shipping To'}
+          ${fulfillment === 'pickup' ? '🚗 Local Delivery Details' : '🚚 Shipping To'}
         </h3>
         <p style="margin:0;font-size:14px;color:#444;">${addressText}</p>
         ${fulfillment === 'pickup'
-          ? '<p style="margin:8px 0 0;font-size:13px;color:#666;">Brandon will contact you to arrange a pickup time at Market on Main, 525 Main St, Lafayette, IN.</p>'
+          ? '<p style="margin:8px 0 0;font-size:13px;color:#666;">Brandon will contact you to arrange delivery.</p>'
           : '<p style="margin:8px 0 0;font-size:13px;color:#666;">Orders typically ship within 1–3 business days. You\'ll receive tracking info by email.</p>'
         }
       </div>
