@@ -32,7 +32,7 @@ app.use(express.json());
 
 // ─── HEALTH CHECK ────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: '10:10 and Healthy API', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', service: '10:10 and Healthy API', checkout_revision: 'local-delivery-v1', timestamp: new Date().toISOString() });
 });
 
 app.get('/', (req, res) => {
@@ -165,6 +165,9 @@ app.get('/api/checkout-session/:sessionId', async (req, res) => {
       customer_email: session.customer_details?.email,
       customer_name: session.customer_details?.name,
       amount_total: session.amount_total,
+      amount_subtotal: session.amount_subtotal,
+      shipping_cost: session.shipping_cost,
+      total_details: session.total_details,
       currency: session.currency,
       line_items: session.line_items?.data || [],
       shipping: session.shipping_details,
