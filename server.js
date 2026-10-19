@@ -126,7 +126,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
       customer_email: customerEmail || undefined,
       metadata: {
         fulfillment_type: fulfillment,
-        delivery_address: fulfillment === 'local_delivery' ? [deliveryAddress.line1,deliveryAddress.city,deliveryAddress.state,deliveryAddress.postalCode].join(', ').slice(0,500) : '',
+        delivery_address: fulfillment === 'local_delivery' ? [deliveryAddress.line1,deliveryAddress.line2,deliveryAddress.city,deliveryAddress.state,deliveryAddress.postalCode].filter(Boolean).join(', ').slice(0,500) : '',
         customer_first_name: metadata?.firstName || '',
         customer_last_name: metadata?.lastName || '',
         customer_phone: metadata?.phone || '',
