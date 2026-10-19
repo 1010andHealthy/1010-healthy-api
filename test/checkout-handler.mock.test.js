@@ -148,7 +148,7 @@ test('all other entered discounts are rejected without a Checkout Session',async
     const h=harness();
     const r=await h.submit(ship(ids[0],code));
     assert.equal(r.statusCode,400,code);
-    assert.match(r.response.error,/SUBARU15/);
+    assert.match(r.response.error,/not supported/i);
     assert.equal(h.sessions.length,0);
   }
 });
