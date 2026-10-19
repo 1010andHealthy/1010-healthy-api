@@ -70,6 +70,7 @@ function harness({ geocoding = 'local', couponValid = true } = {}) {
     if (name === 'stripe') return () => stripe;
     if (name === 'resend') return { Resend: class {} };
     if (name === './checkout-policy') return policy;
+    if (name === './checkout-session-utils') return require('../checkout-session-utils');
     if (name === 'crypto') return {randomUUID: () => 'mock-request-id'};
     throw Error('Unexpected require: '+name);
   }
