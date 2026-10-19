@@ -47,9 +47,9 @@ async function verifyLocalDeliveryAddress(address) {
   const { line1, line2, city, state, postalCode } = address;
   if (![line1,city,state,postalCode].every(x => typeof x === 'string' && x.trim() && x.length < 150)) return false;
   if (line2 != null && (typeof line2 !== 'string' || line2.length > 150)) return false;
-  if (!/^\\d{5}(-\\d{4})?$/.test(postalCode.trim())) return false;
+  if (!/^\d{5}(-\d{4})?$/.test(postalCode.trim())) return false;
   if (!/^(IN|Indiana)$/i.test(state.trim())) return false;
-  if (/\\bP\\s*\\.?\\s*O\\s*\\.?\\s*Box\\b/i.test(line1)) return false;
+  if (/\bP\s*\.?\s*O\s*\.?\s*Box\b/i.test(line1)) return false;
   const postalFive = postalCode.trim().slice(0,5);
   const q = new URLSearchParams({address:[line1,city,state,postalCode,'USA'].join(', '),key:process.env.GOOGLE_MAPS_GEOCODING_API_KEY});
   const response = await fetch('https://maps.googleapis.com/maps/api/geocode/json?'+q,{signal:AbortSignal.timeout(7000)});
