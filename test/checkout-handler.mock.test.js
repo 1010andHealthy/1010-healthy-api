@@ -32,20 +32,23 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
     coupons: { retrieve: async id => id === 'BABYGIRL37' ? ({
       id, valid: babyCouponValid, percent_off: 37, duration: 'once',
       max_redemptions: 1, times_redeemed: babyTimesRedeemed
-    }) : id === 'SWIM15_MAX2_20261024' ? ({
+    }) : id === 'SWIM15_MAX2_20261025' ? ({
       id, valid: swimCouponValid, percent_off:15, duration:'once',
-      max_redemptions:null, redeem_by:1792900800
+      max_redemptions:null, redeem_by:1792987199
     }) : ({
       id, valid: couponValid, percent_off: 15, duration: 'once'
     }) },
-    promotionCodes: { retrieve: async id => id === 'promo_1USKOsGaIkBjCnN2Qb9VFXHh' ? ({
-      id, code:'SWIM15', active: swimPromoActive,
-      max_redemptions:null, expires_at:1792900800,
-      times_redeemed:0
-    }) : ({
-      id, code:'BABYGIRL37', active: babyPromoActive,
-      max_redemptions:1, times_redeemed:babyTimesRedeemed
-    }) },
+    promotionCodes: {
+      list: async () => ({ data: [{
+        id:'promo_new_swim15_mock', code:'SWIM15', active:swimPromoActive,
+        promotion:{type:'coupon',coupon:'SWIM15_MAX2_20261025'},
+        max_redemptions:null, expires_at:1792987199, times_redeemed:0
+      }] }),
+      retrieve: async id => ({
+        id, code:'BABYGIRL37', active:babyPromoActive,
+        max_redemptions:1, times_redeemed:babyTimesRedeemed
+      })
+    },
     checkout: { sessions: {
       create: async params => {
         sessions.push(params);
@@ -296,7 +299,7 @@ test('SWIM15 applies 15% only to Max2.0 on October 24 and keeps shipping $8.95',
   const h=harness({nowISO:swimWindow});
   const r=await h.submit(swimCart(2));
   assert.equal(r.statusCode,200);
-  assert.equal(r.session.discounts[0].promotion_code,'promo_1USKOsGaIkBjCnN2Qb9VFXHh');
+  assert.equal(r.session.discounts[0].promotion_code,'promo_new_swim15_mock');
   assert.equal(r.session.allow_promotion_codes,undefined);
   assert.equal(cents(r),895); // $130 less $19.50 => $110.50; no free shipping
 });
@@ -321,20 +324,26 @@ test('SWIM15 rejects carts without any Max2.0',async()=>{
   assert.match(r.response.error,/only to Max2.0/i);
   assert.equal(h.sessions.length,0);
 });
-test('SWIM15 rejects before start and on October 25, including exact boundary',async()=>{
-  for(const nowISO of ['2026-10-23T23:59:59-04:00','2026-10-25T00:00:00-04:00','2026-10-25T08:00:00-04:00']) {
+test('SWIM15 rejects before October 24 and from October 26 midnight onward',async()=>{
+  for(const nowISO of ['2026-10-23T23:59:59-04:00','2026-10-26T00:00:00-04:00','2026-10-27T12:00:00-04:00']) {
     const h=harness({nowISO});
     const r=await h.submit(swimCart());
     assert.equal(r.statusCode,400,nowISO);
-    assert.match(r.response.error,/October 24/i);
+    assert.match(r.response.error,/October 24-25/i);
     assert.equal(h.sessions.length,0);
   }
 });
-test('SWIM15 accepts event start at midnight and final second before midnight',async()=>{
-  for(const nowISO of ['2026-10-24T00:00:00-04:00','2026-10-24T23:59:59-04:00']) {
+test('SWIM15 accepts all eight requested boundary checks during October 24-25',async()=>{
+  for(const nowISO of [
+    '2026-10-24T00:00:00-04:00',
+    '2026-10-24T23:59:59-04:00',
+    '2026-10-25T00:00:00-04:00',
+    '2026-10-25T20:00:00-04:00',
+    '2026-10-25T23:59:59-04:00'
+  ]) {
     const r=await harness({nowISO}).submit(swimCart());
     assert.equal(r.statusCode,200,nowISO);
-    assert.equal(cents(r),895);
+    assert.equal(cents(r),895); // $65 - $9.75 + $8.95 = $64.20 before tax
   }
 });
 test('SWIM15 blocks inactive or inconsistent Stripe offer',async()=>{
