@@ -1,0 +1,21 @@
+name: SWIM15 one-off live unpaid checkout and expiry tests
+on:
+  schedule:
+    - cron: "17 10 24 10 *" # 06:17 EDT, October 24 (year checked by script)
+    - cron: "13 4 26 10 *" # 00:13 EDT, October 26 (year checked by script)
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  swim15-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Verify unpaid checkout or expiration without payment
+        run: node test/swim15-live-scheduled.mjs
