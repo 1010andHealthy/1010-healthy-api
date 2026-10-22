@@ -317,6 +317,37 @@ test('SWIM15 mixed carts retain regular prices for other items and discount only
   assert.equal(cents(r),0); // $185.25 after discount, qualifies for free shipping
   assert.equal(r.session.line_items.length,2);
 });
+test('SWIM15 one Max2.0 totals $55.25 plus $8.95 shipping, $64.20 pre-tax',async()=>{
+  const r=await harness({nowISO:'2026-10-25T20:00:00-04:00'}).submit(swimCart(1));
+  assert.equal(r.statusCode,200);
+  assert.equal(r.session.line_items[0].price,max2PriceId);
+  assert.equal(priceCents.get(max2PriceId),6500);
+  assert.equal(Math.round(6500*0.15),975);
+  assert.equal(6500-975,5525);
+  assert.equal(cents(r),895);
+  assert.equal(6500-975+cents(r),6420);
+});
+test('SWIM15 two Max2.0 + one MOA discounts $19.50 only on Max2.0',async()=>{
+  const r=await harness({nowISO:'2026-10-25T20:00:00-04:00'}).submit(swimCart(2,[{priceId:moaPriceId,quantity:1}],'swim15'));
+  assert.equal(r.statusCode,200);
+  assert.equal(r.session.discounts[0].promotion_code,'promo_new_swim15_mock');
+  assert.equal(r.session.line_items[0].price,max2PriceId);
+  assert.equal(r.session.line_items[0].quantity,2);
+  assert.equal(r.session.line_items[1].price,moaPriceId);
+  assert.equal(r.session.line_items[1].quantity,1);
+  assert.equal(Math.round(6500*2*0.15),1950);
+  assert.equal(6500*2+13000-1950,24050);
+  assert.equal(cents(r),0);
+});
+test('SWIM15 one Max2.0 with eligible local delivery has no shipping charge',async()=>{
+  const cart=swimCart();
+  cart.fulfillment='local_delivery';
+  cart.deliveryAddress={line1:'765 Main St',city:'Lafayette',state:'IN',postalCode:'47901'};
+  const r=await harness({nowISO:'2026-10-25T12:00:00-04:00'}).submit(cart);
+  assert.equal(r.statusCode,200);
+  assert.equal(cents(r),0);
+  assert.equal(6500-Math.round(6500*0.15),5525);
+});
 test('SWIM15 rejects carts without any Max2.0',async()=>{
   const h=harness({nowISO:swimWindow});
   const r=await h.submit({items:[{priceId:moaPriceId,quantity:2}],fulfillment:'ship',discountCode:'SWIM15'});
