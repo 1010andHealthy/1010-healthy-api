@@ -9,7 +9,7 @@ const prices = {
   sixtyFive: 'price_1U9pFQGaIkBjCnN2nD8BYKvB'
 };
 const inLafayette = { line1:'20 N 6th St', city:'Lafayette',state:'IN',postalCode:'47901' };
-const inWestLafayette = { line1:'101 N Grant St',city:'West Lafayette',state:'IN',postalCode:'47906' };
+const inWestLafayette = { line1:'222 N Chauncey Ave',city:'West Lafayette',state:'IN',postalCode:'47906' };
 const outside = { line1:'200 E Washington St',city:'Indianapolis',state:'IN',postalCode:'46204' };
 const unknown = { line1:'999999 Impossible Mystery Road',city:'Lafayette',state:'IN',postalCode:'47901' };
 
@@ -83,7 +83,7 @@ await accepted('$140 SUBARU15 => $119 + $8.95 shipping',
 await accepted('Lafayette street address => free local delivery',
   cart(prices.exactly125,1,'local_delivery',{deliveryAddress:inLafayette}),{amount:12500,shipping:0,address:'20 N 6th St'});
 await accepted('West Lafayette street address => free local delivery',
-  cart(prices.sixtyFive,1,'local_delivery',{deliveryAddress:inWestLafayette}),{amount:6500,shipping:0,address:'101 N Grant St'});
+  cart(prices.sixtyFive,1,'local_delivery',{deliveryAddress:inWestLafayette}),{amount:6500,shipping:0,address:'222 N Chauncey Ave'});
 await accepted('different local delivery address overrides other customer metadata',
   cart(prices.sixtyFive,1,'local_delivery',{deliveryAddress:inLafayette,metadata:{notes:'original order address was elsewhere'}}),{amount:6500,shipping:0,address:'20 N 6th St'});
 await rejected('Indianapolis address outside both 15-mile circles',
