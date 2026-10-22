@@ -1,0 +1,45 @@
+name: SWIM15 pre-event live-backend check (no payments)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/swim15-live-preflight.yml"
+      - "server.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  live-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify SWIM15 backend error string before event (no checkout session)
+        env:
+          CHECKOUT_API: https://1010-healthy-api-production-b8c3.up.railway.app
+        run: |
+          node --input-type=module <<'JS'
+          const eventStart = Date.parse('2026-10-24T04:00:00Z');
+          if (Date.now() >= eventStart) {
+            console.log('SKIP — pre-event rejection check disabled from October 24 onward.');
+            process.exit(0);
+          }
+          const response = await fetch(process.env.CHECKOUT_API + '/api/create-checkout-session', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              items:[{priceId:'price_1U9pFQGaIkBjCnN2nD8BYKvB',quantity:1}],
+              fulfillment:'ship',
+              discountCode:'SWIM15'
+            }),
+            signal: AbortSignal.timeout(14000)
+          });
+          const data = await response.json();
+          const expected = 'SWIM15 is valid only on October 24-25, 2026.';
+          if(response.status !== 400 || data.error !== expected || data.clientSecret) {
+            throw Error('FAIL SWIM15 backend check: HTTP=' + response.status +
+              ' error=' + JSON.stringify(data.error) +
+              ' CheckoutSessionCreated=' + Boolean(data.clientSecret));
+          }
+          console.log('PASS — live backend confirms October 24-25 event window via exact pre-event error.');
+          console.log('No Stripe Checkout Session created; no payment, charge, or refund.');
+          JS
