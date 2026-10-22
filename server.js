@@ -133,13 +133,22 @@ app.post('/api/create-checkout-session', async (req, res) => {
         discountCents = Math.round(subtotalCents * 0.37);
         discounts = [{ promotion_code: promo.id }];
       } else if (code === 'SWIM15') {
-        // Boilermaker Aquatics Swim-A-Thon, Oct 24 2026, midnight-to-midnight
-        // America/Indiana/Indianapolis (EDT, UTC-04:00 on event day).
-        const eventStart = Date.parse('2026-10-24T04:00:00Z');
-        const eventEnd = Date.parse('2026-10-25T04:00:00Z'); // exclusive
-        const now = Date.now();
-        if (now < eventStart || now >= eventEnd) {
-          return bad('swim15_outside_event', 'SWIM15 is valid only on October 24, 2026 (Indiana time).');
+        // Swim-A-Thon: both Oct 24 and Oct 25, 2026, inclusive through 23:59:59
+        // in America/Indiana/Indianapolis. Do not hard-code a UTC offset.
+        const eventLocal = Object.fromEntries(
+          new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'America/Indiana/Indianapolis',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hourCycle: 'h23',
+          }).formatToParts(new Date(Date.now()))
+            .filter(p => p.type !== 'literal')
+            .map(p => [p.type, p.value])
+        );
+        const localClock = [eventLocal.year, eventLocal.month, eventLocal.day,
+          eventLocal.hour, eventLocal.minute, eventLocal.second].join('');
+        if (localClock < '20261024000000' || localClock > '20261025235959') {
+          return bad('swim15_outside_event', 'SWIM15 is valid only on October 24-25, 2026.');
         }
         const max2PriceId = 'price_1U9pFQGaIkBjCnN2nD8BYKvB';
         const eligibleSubtotalCents = items.reduce((sum, item) =>
@@ -147,20 +156,29 @@ app.post('/api/create-checkout-session', async (req, res) => {
         if (eligibleSubtotalCents === 0) {
           return bad('swim15_product_required', 'SWIM15 applies only to Max2.0. Add at least one box to use it.');
         }
-        const [coupon, promo] = await Promise.all([
-          stripe.coupons.retrieve('SWIM15_MAX2_20261024'),
-          stripe.promotionCodes.retrieve('promo_1USKOsGaIkBjCnN2Qb9VFXHh'),
+        const expectedCouponId = 'SWIM15_MAX2_20261025';
+        const expectedExpiration = 1792987199; // 2026-10-26 03:59:59 UTC
+        // Resolve by active code and expected coupon so replacing the old promotion
+        // does not require hard-coding an unrelated Stripe-generated promo ID.
+        const [coupon, promoList] = await Promise.all([
+          stripe.coupons.retrieve(expectedCouponId),
+          stripe.promotionCodes.list({ code: 'SWIM15', active: true, limit: 100 }),
         ]);
+        const promo = promoList.data.find(p => {
+          const reference = p.promotion?.coupon ?? p.coupon;
+          const id = typeof reference === 'string' ? reference : reference?.id;
+          return id === expectedCouponId;
+        });
         if (!coupon.valid || coupon.percent_off !== 15 ||
-            coupon.redeem_by !== Math.floor(eventEnd / 1000) ||
+            coupon.redeem_by !== expectedExpiration ||
             coupon.max_redemptions != null ||
-            !promo.active || promo.code?.toUpperCase() !== 'SWIM15' ||
-            promo.expires_at !== Math.floor(eventEnd / 1000) ||
+            !promo || !promo.active || promo.code?.toUpperCase() !== 'SWIM15' ||
+            promo.expires_at !== expectedExpiration ||
             promo.max_redemptions != null) {
           return bad('swim15_unavailable', 'SWIM15 is currently unavailable. Please contact us.');
         }
-        // Discount only the eligible Max2.0 line items, not other cart products.
-        // Stripe independently restricts the coupon to the Max2.0 product.
+        // Only Max2.0 line items are discounted. The replacement Stripe coupon
+        // must also be restricted to product prod_VA72rCQojj8rBW.
         discountCents = Math.round(eligibleSubtotalCents * 0.15);
         discounts = [{ promotion_code: promo.id }];
       } else {
