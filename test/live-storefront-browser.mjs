@@ -44,13 +44,13 @@ for(const [qty,subtotal,ship,total] of expected){
     console.log('FORM_PREP qty='+qty+' url='+page.url());
     if(page.url().includes('/shop/checkout')){
       console.log('FORM_FIELDS '+JSON.stringify(await page.locator('input,select').evaluateAll(els=>els.map(x=>({tag:x.tagName,name:x.name,id:x.id,placeholder:x.placeholder,type:x.type})))));
-      await page.getByLabel(/First Name/i).fill('Unpaid QA');
-      await page.getByLabel(/Last Name/i).fill('Verification');
-      await page.getByLabel(/^Email/i).fill('unpaid-qa-'+qty+'@example.com');
-      await page.getByLabel(/Street Address/i).fill('20 N 6th St');
-      await page.getByLabel(/^City/i).fill('Lafayette');
-      await page.getByLabel(/^State/i).selectOption('IN');
-      await page.getByLabel(/ZIP Code/i).fill('47901');
+      await page.getByPlaceholder('Jane').fill('Unpaid QA');
+      await page.getByPlaceholder('Smith').fill('Verification');
+      await page.getByPlaceholder('jane@example.com').fill('unpaid-qa-'+qty+'@example.com');
+      await page.getByPlaceholder('123 Main Street').fill('20 N 6th St');
+      await page.getByPlaceholder('Lafayette').fill('Lafayette');
+      await page.locator('select').first().selectOption('IN');
+      await page.getByPlaceholder('47901').fill('47901');
     }
     const checkout=page.getByRole('button',{name:/continue to payment|checkout|proceed to checkout/i});
     const checkoutLink=page.getByRole('link',{name:/continue to payment|checkout|proceed to checkout/i});
