@@ -1,8 +1,8 @@
 // Server-authoritative holiday offer. The Stripe coupon is an eligibility guard;
 // checkout implements the $51 discount PER UNIT using ephemeral line-item prices.
-const SLENDERIIZ_PRICE_ID = 'price_1U9pFSGaIkBjCnN2aLUlDGrl';
-const SLENDERIIZ_PRODUCT_ID = 'prod_VA6ZFPxC17XZAv';
-const HOLIDAY_COUPON_ID = 'HOLIDAY2026_SLENDERIIZ_51';
+const SLENDERIIZ_PRICE_ID = process.env.SLENDERIIZ_PRICE_ID || 'price_1U9pFSGaIkBjCnN2aLUlDGrl';
+const SLENDERIIZ_PRODUCT_ID = process.env.SLENDERIIZ_PRODUCT_ID || 'prod_VA6ZFPxC17XZAv';
+const HOLIDAY_COUPON_ID = process.env.HOLIDAY_COUPON_ID || 'HOLIDAY2026_SLENDERIIZ_51';
 const HOLIDAY_COUPON_REDEEM_BY = 1798779599; // 2026-12-31 23:59:59 EST
 const HOLIDAY_REGULAR_CENTS = 15000;
 const HOLIDAY_SALE_CENTS = 9900;
@@ -41,6 +41,13 @@ const STANDARD_CENTS = 895;
 const ALLOWED_PRICE_IDS = new Set([
 'price_1U9pFQGaIkBjCnN2nD8BYKvB','price_1U9pFSGaIkBjCnN2aLUlDGrl','price_1U9pFSGaIkBjCnN2OZj8vXcC','price_1U9pFSGaIkBjCnN2oWCmgTVQ','price_1U9pFPGaIkBjCnN2xWaDfZG8','price_1US5JiGaIkBjCnN2j4GJdggr','price_1U9pFPGaIkBjCnN2Y1ByxKIV','price_1U9pFSGaIkBjCnN26JtUQLGm','price_1U9pFQGaIkBjCnN2lgEIzRFv','price_1U9pFQGaIkBjCnN2Z2fcWh29','price_1UMdLmGaIkBjCnN2Ig6sezca','price_1U9pFQGaIkBjCnN2ZOST5WE4','price_1US5JqGaIkBjCnN2vNseeOau','price_1U9pFSGaIkBjCnN2shv1Ilzv','price_1U9pFQGaIkBjCnN2Cz3wBKIO','price_1U9pFUGaIkBjCnN2HJjaD1OD','price_1US5JsGaIkBjCnN2vyPVNwRf','price_1US5JuGaIkBjCnN2WWtzJTPR','price_1U9pFRGaIkBjCnN26z7zLODS','price_1U9pFPGaIkBjCnN2odxfYH52','price_1U9pFTGaIkBjCnN2PJYuw4HB','price_1U9pFXGaIkBjCnN2lRBNqkKr','price_1U9pFPGaIkBjCnN2tDGa13qE','price_1U9pFSGaIkBjCnN2NFwN3J2n','price_1US5JvGaIkBjCnN2iXBvrfDf','price_1U9pFPGaIkBjCnN2doJXxoX9','price_1US5JxGaIkBjCnN2Z7rHzNAu','price_1U9pFSGaIkBjCnN2V7RKmbqt','price_1U9pFSGaIkBjCnN2hpgeT9R6','price_1U9pFSGaIkBjCnN2UdR2pTxm','price_1U9pFPGaIkBjCnN2gSBDL9vZ'
 ]);
+// Test-only Stripe price IDs, never enabled on production.
+if (process.env.NODE_ENV === 'test' && process.env.TEST_EXTRA_PRICE_IDS) {
+  for (const id of process.env.TEST_EXTRA_PRICE_IDS.split(',').map(s => s.trim()).filter(Boolean)) {
+    ALLOWED_PRICE_IDS.add(id);
+  }
+}
+ALLOWED_PRICE_IDS.add(SLENDERIIZ_PRICE_ID);
 function validateItems(items) {
  if (!Array.isArray(items) || !items.length || items.length > 99) throw new Error('invalid_items');
  for (const item of items) {
