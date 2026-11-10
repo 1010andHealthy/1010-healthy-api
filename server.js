@@ -33,7 +33,7 @@ app.use(express.json());
 
 // ─── HEALTH CHECK ────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: '10:10 and Healthy API', checkout_revision: 'local-delivery-v1', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', service: '10:10 and Healthy API', checkout_revision: 'slenderiiz-holiday-v1', timestamp: new Date().toISOString() });
 });
 
 app.get('/', (req, res) => {
@@ -41,7 +41,41 @@ app.get('/', (req, res) => {
 });
 
 // ─── CREATE CHECKOUT SESSION ─────────────────────────────────────────────────
-const { validateItems, shippingOptions, isLocalDelivery } = require('./checkout-policy');
+const {
+  validateItems, shippingOptions, isLocalDelivery, SLENDERIIZ_PRICE_ID,
+  SLENDERIIZ_PRODUCT_ID, HOLIDAY_COUPON_ID, HOLIDAY_REGULAR_CENTS,
+  HOLIDAY_SALE_CENTS, HOLIDAY_SAVINGS_CENTS, holidaySaleWindowActive,
+  holidayCouponValid, discountedSubaruUnitCents, discountedLine,
+} = require('./checkout-policy');
+
+async function verifiedHolidayCoupon() {
+  return holidayCouponValid(await stripe.coupons.retrieve(HOLIDAY_COUPON_ID));
+}
+
+// Public sale status for the website. Neither a browser clock nor a UTM code grants the price.
+app.get('/api/holiday-slenderiiz', async (_req, res) => {
+  res.set?.('Cache-Control', 'no-store');
+  const inWindow = holidaySaleWindowActive(new Date(Date.now()));
+  let active = false;
+  if (inWindow) {
+    try { active = await verifiedHolidayCoupon(); }
+    catch (err) {
+      console.error(JSON.stringify({event:'holiday_status_failed',error:err.code || err.message}));
+      return res.status(503).json({saleActive:false,error:'holiday_status_unavailable'});
+    }
+  }
+  return res.json({
+    saleActive: active,
+    productId: SLENDERIIZ_PRODUCT_ID,
+    priceId: SLENDERIIZ_PRICE_ID,
+    regularUnitCents: HOLIDAY_REGULAR_CENTS,
+    currentUnitCents: active ? HOLIDAY_SALE_CENTS : HOLIDAY_REGULAR_CENTS,
+    savingsPerUnitCents: active ? HOLIDAY_SAVINGS_CENTS : 0,
+    endsAt: '2027-01-01T00:00:00-05:00',
+    timezone: 'America/Indiana/Indianapolis',
+    stacking: 'Holiday price never stacks with another discount on Slenderiiz',
+  });
+});
 async function verifyLocalDeliveryAddress(address) {
   if (!process.env.GOOGLE_MAPS_GEOCODING_API_KEY) throw new Error('geocoding_not_configured');
   if (!address || typeof address !== 'object') return false;
@@ -104,17 +138,45 @@ app.post('/api/create-checkout-session', async (req, res) => {
     }
     const subtotalCents = items.reduce((sum, i) => sum + priceById.get(i.priceId).unit_amount * i.quantity, 0);
     if (!Number.isSafeInteger(subtotalCents)) return bad('subtotal_overflow', 'Please reduce your cart quantity.');
+    const holidayUnits = holidaySaleWindowActive(new Date(Date.now()))
+      ? items.filter(i => i.priceId === SLENDERIIZ_PRICE_ID).reduce((n, i) => n + i.quantity, 0) : 0;
+    const holidayActive = holidayUnits > 0;
+    if (holidayActive) {
+      const price = priceById.get(SLENDERIIZ_PRICE_ID);
+      const product = typeof price?.product === 'string' ? price.product : price?.product?.id;
+      if (price?.unit_amount !== HOLIDAY_REGULAR_CENTS || product !== SLENDERIIZ_PRODUCT_ID) {
+        return bad('holiday_price_mismatch', 'Holiday pricing is temporarily unavailable. Please contact us.');
+      }
+      if (!(await verifiedHolidayCoupon())) {
+        return res.status(503).json({error:'Holiday pricing is temporarily unavailable. Please try again later.',requestId});
+      }
+    }
+    const holidaySavingsCents = holidayUnits * HOLIDAY_SAVINGS_CENTS;
     let discountCents = 0;
     let discounts;
+    let inlineSubaruPricing = false;
     if (discountCode != null && String(discountCode).trim()) {
       const code = String(discountCode).trim().toUpperCase();
       if (code === 'SUBARU15') {
-        const coupon = await stripe.coupons.retrieve('eBftR5rn');
+        const coupon = await stripe.coupons.retrieve(process.env.NODE_ENV === 'test' && process.env.TEST_SUBARU_COUPON_ID ? process.env.TEST_SUBARU_COUPON_ID : 'eBftR5rn');
         if (!coupon.valid || coupon.percent_off !== 15) {
           return bad('inactive_discount', 'SUBARU15 is temporarily unavailable.');
         }
-        discountCents = Math.round(subtotalCents * 0.15);
-        discounts = [{ coupon: coupon.id }];
+        if (holidayActive) {
+          const otherItems = items.filter(i => i.priceId !== SLENDERIIZ_PRICE_ID);
+          if (!otherItems.length) {
+            return bad('discount_not_stackable', 'SUBARU15 cannot be combined with the Slenderiiz holiday price.');
+          }
+          // Stripe's percentage coupon would also discount Slenderiiz. Instead, price
+          // only the OTHER products at 85% per unit and never attach two coupons.
+          inlineSubaruPricing = true;
+          discountCents = otherItems.reduce((sum, i) => sum +
+            (priceById.get(i.priceId).unit_amount -
+             discountedSubaruUnitCents(priceById.get(i.priceId).unit_amount)) * i.quantity, 0);
+        } else {
+          discountCents = Math.round(subtotalCents * 0.15);
+          discounts = [{ coupon: coupon.id }];
+        }
       } else if (code === 'BABYGIRL37') {
         // Unique one-time offer. Never discount another product or an altered cart.
         const vinaliPriceId = 'price_1U9pFPGaIkBjCnN2doJXxoX9';
@@ -186,15 +248,25 @@ app.post('/api/create-checkout-session', async (req, res) => {
       }
       log.discountCodeApplied = true;
     }
-    const qualifyingCents = Math.max(0, subtotalCents - discountCents);
+    const qualifyingCents = Math.max(0, subtotalCents - discountCents - holidaySavingsCents);
     log.subtotalCents = subtotalCents;
-    log.discountCents = discountCents;
+    log.discountCents = discountCents + holidaySavingsCents;
+    log.holidayUnits = holidayUnits;
     log.qualifyingCents = qualifyingCents;
     log.shippingCents = fulfillment === 'local_delivery' ? 0 : (qualifyingCents > 12500 ? 0 : 895);
     log.fulfillment = fulfillment;
     const params = {
       ui_mode: 'embedded', mode: 'payment',
-      line_items: items.map(i => ({ price: i.priceId, quantity: i.quantity })),
+      line_items: items.map(i => {
+        const price = priceById.get(i.priceId);
+        if (holidayActive && i.priceId === SLENDERIIZ_PRICE_ID) {
+          return discountedLine(price, HOLIDAY_SALE_CENTS, i.quantity);
+        }
+        if (inlineSubaruPricing) {
+          return discountedLine(price, discountedSubaruUnitCents(price.unit_amount), i.quantity);
+        }
+        return { price: i.priceId, quantity: i.quantity };
+      }),
       // Stripe defaults to no in-checkout promotion code entry. Do not combine discounts with allow_promotion_codes.
       discounts,
       shipping_address_collection: fulfillment === 'ship' ? { allowed_countries: ['US'] } : undefined,
@@ -210,6 +282,12 @@ app.post('/api/create-checkout-session', async (req, res) => {
         customer_phone: metadata?.phone || '',
         order_notes: metadata?.notes || '',
         source: '1010andhealthy.com',
+        holiday_offer: holidayActive ? HOLIDAY_COUPON_ID : '',
+        holiday_label: holidayActive ? 'Slenderiiz Holiday Special Nov-Dec 2026' : '',
+        holiday_units: String(holidayUnits),
+        holiday_savings_cents: String(holidaySavingsCents),
+        nonholiday_discount_cents: String(discountCents),
+        discount_code_entered: discountCode ? String(discountCode).trim().toUpperCase().slice(0,40) : '',
       },
       // Card-only Checkout: do not request Link's accelerated verification flow.
       payment_method_types: ['card'],
@@ -333,13 +411,19 @@ async function handleCheckoutCompleted(session) {
   const orderTotal = ((session.amount_total || 0) / 100).toFixed(2);
   const orderNotes = session.metadata?.order_notes || '';
   const phone = session.metadata?.customer_phone || '';
+  const holidayOrder = (fullSession.metadata?.holiday_offer || session.metadata?.holiday_offer) === HOLIDAY_COUPON_ID;
+  const holidayItemLabel = item => {
+    const product = item.price?.product;
+    const productId = typeof product === 'string' ? product : product?.id;
+    return holidayOrder && productId === SLENDERIIZ_PRODUCT_ID ? ' (Holiday Special: $99 each)' : '';
+  };
 
   // Build items list
   const itemsText = lineItems.map(item => {
     const name = typeof item.price?.product === 'object' ? item.price.product.name : 'Product';
     const qty = item.quantity;
     const amount = ((item.amount_total || 0) / 100).toFixed(2);
-    return `${name} × ${qty} — $${amount}`;
+    return `${name}${holidayItemLabel(item)} × ${qty} — ${amount}`;
   }).join('\n');
 
   const itemsHtml = lineItems.map(item => {
@@ -347,7 +431,7 @@ async function handleCheckoutCompleted(session) {
     const qty = item.quantity;
     const amount = ((item.amount_total || 0) / 100).toFixed(2);
     return `<tr>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee;">${name}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee;">${name}${holidayItemLabel(item)}</td>
       <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">${qty}</td>
       <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">$${amount}</td>
     </tr>`;

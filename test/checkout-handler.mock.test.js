@@ -5,7 +5,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const policy = require('../checkout-policy');
 
-const ids = [...policy.ALLOWED_PRICE_IDS];
+const ids = [...policy.ALLOWED_PRICE_IDS].filter(id => id !== policy.SLENDERIIZ_PRICE_ID);
+ids.splice(3, 0, policy.SLENDERIIZ_PRICE_ID); // Keep existing pricing-fixture positions; $150 Slenderiiz at index 3.
 const priceCents = new Map([
   [ids[0], 12500], [ids[1], 12501], [ids[2], 14000],
   [ids[3], 15000], [ids[4], 10000], ['price_1U9pFPGaIkBjCnN2doJXxoX9', 6000],
@@ -13,7 +14,7 @@ const priceCents = new Map([
   ['price_1U9pFSGaIkBjCnN26JtUQLGm', 13000]
 ]);
 
-function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0, swimCouponValid = true, swimPromoActive = true, nowISO = null } = {}) {
+function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0, swimCouponValid = true, swimPromoActive = true, holidayCouponValid = true, nowISO = '2026-10-20T12:00:00-04:00' } = {}) {
   const routes = new Map();
   const app = {
     use() {},
@@ -27,11 +28,17 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
   const sessions = [];
   const stripe = {
     prices: { retrieve: async id => ({
-      id, currency: 'usd', active: true, type: 'one_time', unit_amount: priceCents.get(id) ?? 10000
+      id, currency: 'usd', active: true, type: 'one_time', unit_amount: priceCents.get(id) ?? 10000,
+      product: id === policy.SLENDERIIZ_PRICE_ID ? policy.SLENDERIIZ_PRODUCT_ID : 'prod_mock_' + id
     }) },
     coupons: { retrieve: async id => id === 'BABYGIRL37' ? ({
       id, valid: babyCouponValid, percent_off: 37, duration: 'once',
       max_redemptions: 1, times_redeemed: babyTimesRedeemed
+    }) : id === policy.HOLIDAY_COUPON_ID ? ({
+      id, valid: holidayCouponValid, amount_off: 5100, currency:'usd', duration:'once',
+      redeem_by: policy.HOLIDAY_COUPON_REDEEM_BY,
+      metadata: { product_id: policy.SLENDERIIZ_PRODUCT_ID },
+      applies_to: { products:[policy.SLENDERIIZ_PRODUCT_ID] },
     }) : id === 'SWIM15_MAX2_20261025' ? ({
       id, valid: swimCouponValid, percent_off:15, duration:'once',
       max_redemptions:null, redeem_by:1792987199
@@ -103,6 +110,17 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
   }, {filename:'server.js'});
   return {
     sessions,
+    async status() {
+      let statusCode = 200;
+      let response;
+      const res = {
+        status(code) {statusCode = code; return this;},
+        set() {return this;},
+        json(value) {response = value; return this;},
+      };
+      await routes.get('/api/holiday-slenderiiz')({}, res);
+      return {statusCode, response};
+    },
     async submit(body) {
       let statusCode = 200;
       let response;
@@ -394,4 +412,109 @@ test('SUBARU15 and BABYGIRL37 are unchanged by the event offer',async()=>{
   const b=await h.submit({items:[{priceId:vinaliPriceId,quantity:2}],fulfillment:'ship',discountCode:'BABYGIRL37'});
   assert.equal(b.statusCode,200);
   assert.equal(b.session.discounts[0].promotion_code,'promo_1USJxnGaIkBjCnN227OlEj6I');
+});
+
+
+// Slenderiiz holiday campaign, November 1 - December 31, 2026, Indianapolis clock.
+const slender = policy.SLENDERIIZ_PRICE_ID;
+const holiday = (nowISO, opts={}) => harness({nowISO, ...opts});
+const oneSlender = (quantity=1,discountCode) => ({
+  items:[{priceId:slender,quantity}],fulfillment:'ship',discountCode,
+});
+const stripeLineAmount = (item) => item.price_data?.unit_amount;
+
+test('holiday one Slenderiiz is $99 + $8.95 shipping and is labeled for receipts',async()=>{
+  const r=await holiday('2026-11-10T15:00:00-05:00').submit(oneSlender());
+  assert.equal(r.statusCode,200);
+  assert.equal(r.session.line_items.length,1);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),9900);
+  assert.equal(r.session.line_items[0].price_data.product,policy.SLENDERIIZ_PRODUCT_ID);
+  assert.equal(r.session.discounts,undefined); // $51 off per unit, never an extra coupon.
+  assert.equal(cents(r),895);
+  assert.equal(r.session.metadata.holiday_offer,policy.HOLIDAY_COUPON_ID);
+  assert.equal(r.session.metadata.holiday_label,'Slenderiiz Holiday Special Nov-Dec 2026');
+  assert.equal(r.session.metadata.holiday_savings_cents,'5100');
+});
+
+test('holiday two and three Slenderiiz systems discount every unit and qualify for free shipping',async()=>{
+  for(const [qty,total] of [[2,19800],[3,29700]]){
+    const r=await holiday('2026-12-15T10:00:00-05:00').submit(oneSlender(qty));
+    assert.equal(r.statusCode,200);
+    assert.equal(stripeLineAmount(r.session.line_items[0])*qty,total);
+    assert.equal(r.session.metadata.holiday_savings_cents,String(qty*5100));
+    assert.equal(cents(r),0);
+    assert.equal(r.session.discounts,undefined);
+  }
+});
+
+test('SUBARU15 only discounts non-Slenderiiz lines in a mixed holiday cart',async()=>{
+  const regularId=ids[4]; // $100 fixture
+  const r=await holiday('2026-11-10T10:00:00-05:00').submit({
+    items:[{priceId:slender,quantity:2},{priceId:regularId,quantity:1}],
+    fulfillment:'ship',discountCode:'SUBARU15',
+  });
+  assert.equal(r.statusCode,200);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),9900);
+  assert.equal(stripeLineAmount(r.session.line_items[1]),8500);
+  assert.equal(r.session.line_items[0].quantity,2);
+  assert.equal(r.session.discounts,undefined);
+  assert.equal(cents(r),0); // $198 + $85 = $283 after both nonstacking reductions.
+  assert.equal(r.session.metadata.nonholiday_discount_cents,'1500');
+});
+
+test('single holiday Slenderiiz rejects SUBARU15 rather than stacking',async()=>{
+  const h=holiday('2026-11-10T10:00:00-05:00');
+  const r=await h.submit(oneSlender(1,'SUBARU15'));
+  assert.equal(r.statusCode,400);
+  assert.match(r.response.error,/cannot be combined/i);
+  assert.equal(h.sessions.length,0);
+});
+
+test('old November coupon ID cannot be applied or stacked',async()=>{
+  const h=holiday('2026-11-10T10:00:00-05:00');
+  const r=await h.submit(oneSlender(1,'NOV2026_SLENDERIIZ_51'));
+  assert.equal(r.statusCode,400);
+  assert.match(r.response.error,/not supported/i);
+  assert.equal(h.sessions.length,0);
+});
+
+test('holiday coupon invalid means no full-price Slenderiiz fallback checkout',async()=>{
+  const h=holiday('2026-11-10T10:00:00-05:00',{holidayCouponValid:false});
+  const r=await h.submit(oneSlender());
+  assert.equal(r.statusCode,503);
+  assert.equal(h.sessions.length,0);
+  const status=await h.status();
+  assert.equal(status.response.saleActive,false);
+});
+
+test('public saleActive endpoint follows Indianapolis time and Stripe coupon validity',async()=>{
+  for(const [date,active] of [
+    ['2026-10-31T23:59:59-04:00',false],
+    ['2026-11-01T00:00:00-04:00',true],
+    ['2026-12-31T23:59:59-05:00',true],
+    ['2027-01-01T00:00:00-05:00',false],
+  ]){
+    const r=await holiday(date).status();
+    assert.equal(r.statusCode,200);
+    assert.equal(r.response.saleActive,active,date);
+    assert.equal(r.response.currentUnitCents,active?9900:15000);
+  }
+});
+
+test('after Dec 31 midnight Indiana checkout uses standard $150 Stripe price, not holiday promo',async()=>{
+  const r=await holiday('2027-01-01T00:00:00-05:00').submit(oneSlender());
+  assert.equal(r.statusCode,200);
+  assert.equal(r.session.line_items[0].price,slender);
+  assert.equal(r.session.metadata.holiday_offer,'');
+  assert.equal(cents(r),0);
+});
+
+test('holiday eligible local delivery stays free',async()=>{
+  const r=await holiday('2026-11-10T10:00:00-05:00').submit({
+    ...oneSlender(), fulfillment:'local_delivery',
+    deliveryAddress:{line1:'765 Main St',city:'Lafayette',state:'IN',postalCode:'47901'},
+  });
+  assert.equal(r.statusCode,200);
+  assert.equal(cents(r),0);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),9900);
 });
