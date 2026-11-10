@@ -64,14 +64,14 @@ async function waitForRevision(){
     try{
       const response=await fetch(API+'/health',{signal:AbortSignal.timeout(7000)});
       const body=await response.json();
-      if(body.checkout_revision==='local-delivery-v1') return;
+      if(body.checkout_revision==='slenderiiz-holiday-v1') return;
     }catch(e){}
     await new Promise(resolve=>setTimeout(resolve,5000));
   }
   throw Error('Railway did not report the new checkout_revision in time; check deployment');
 }
 await waitForRevision();
-console.log('Railway reports checkout_revision=local-delivery-v1. Beginning unpaid provider checks.');
+console.log('Railway reports checkout_revision=slenderiiz-holiday-v1. Beginning unpaid provider checks.');
 await accepted('exactly $125 subtotal => $8.95 standard shipping',
   cart(prices.exactly125),{amount:13395,subtotal:12500,shipping:895});
 await accepted('$130 subtotal => free standard shipping',
@@ -96,5 +96,47 @@ for (const code of ['SUBARU20','WELCOME10','LOCALPICKUP','PAULA15']) {
 }
 await rejected('tampered forged price ID',cart('price_forged_invalid'));
 await rejected('tampered fractional quantity',cart(prices.exactly125,1.5));
+
+const holidayPriceId='price_1U9pFSGaIkBjCnN2aLUlDGrl';
+let holidayStatus=null;
+try{
+  const r=await fetch(API+'/api/holiday-slenderiiz',{signal:AbortSignal.timeout(12000)});
+  holidayStatus=await r.json();
+  expect('holiday status endpoint available',r.status===200 && typeof holidayStatus.saleActive==='boolean',
+    'HTTP='+r.status+' active='+holidayStatus?.saleActive);
+}catch(e){expect('holiday status endpoint available',false,'exception='+e.message);}
+if (holidayStatus?.saleActive){
+  expect('holiday public price is $99 and regular price is $150',
+    holidayStatus.currentUnitCents===9900 && holidayStatus.regularUnitCents===15000
+      && holidayStatus.savingsPerUnitCents===5100);
+  const baseHoliday={priceId:holidayPriceId};
+  for(const [qty,expectedSub,ship] of [[1,9900,895],[2,19800,0],[3,29700,0]]){
+    const c={items:[{priceId:baseHoliday.priceId,quantity:qty}],fulfillment:'ship'};
+    await accepted('HOLIDAY '+qty+' Slenderiiz $99 per unit, shipping correct',c,
+      {amount:expectedSub+ship,subtotal:expectedSub,shipping:ship});
+    const created=await post(c);
+    const session=await details(created);
+    expect('HOLIDAY '+qty+' Stripe line item equals $99 unit',session?.line_items?.data?.[0]?.price?.unit_amount===9900
+      && session?.metadata?.holiday_offer==='HOLIDAY2026_SLENDERIIZ_51',
+      'Stripe unit='+session?.line_items?.data?.[0]?.price?.unit_amount);
+  }
+  const mixed={items:[{priceId:holidayPriceId,quantity:1},{priceId:'price_1U9pFPGaIkBjCnN2xWaDfZG8',quantity:1}],
+    fulfillment:'ship',discountCode:'SUBARU15'};
+  const mixedResponse=await post(mixed);
+  const mixedSession=await details(mixedResponse);
+  const mixedLines=mixedSession?.line_items?.data || [];
+  const slenderLine=mixedLines.find(x=>x.price?.product==='prod_VA6ZFPxC17XZAv'
+    || x.price?.product?.id==='prod_VA6ZFPxC17XZAv');
+  expect('HOLIDAY mixed SUBARU15 never discounts Slenderiiz below $99',
+    mixedResponse.status===200 && slenderLine?.price?.unit_amount===9900,
+    'HTTP='+mixedResponse.status+' item cents='+slenderLine?.price?.unit_amount);
+  await rejected('HOLIDAY Slenderiiz-only SUBARU15 refused',
+    {items:[{priceId:holidayPriceId,quantity:1}],fulfillment:'ship',discountCode:'SUBARU15'});
+  await rejected('HOLIDAY old NOV coupon not accepted',
+    {items:[{priceId:holidayPriceId,quantity:1}],fulfillment:'ship',discountCode:'NOV2026_SLENDERIIZ_51'});
+}else{
+  expect('holiday API disabled outside campaign',holidayStatus?.currentUnitCents===15000);
+}
+
 console.log('SUMMARY '+(completed-failures.length)+'/'+completed+' checks passed. No payment attempts, charges, or refunds.');
 if(failures.length){console.error(failures.join('\n'));process.exitCode=1;}
