@@ -1,3 +1,41 @@
+// Server-authoritative holiday offer. The Stripe coupon is an eligibility guard;
+// checkout implements the $51 discount PER UNIT using ephemeral line-item prices.
+const SLENDERIIZ_PRICE_ID = 'price_1U9pFSGaIkBjCnN2aLUlDGrl';
+const SLENDERIIZ_PRODUCT_ID = 'prod_VA6ZFPxC17XZAv';
+const HOLIDAY_COUPON_ID = 'HOLIDAY2026_SLENDERIIZ_51';
+const HOLIDAY_COUPON_REDEEM_BY = 1798779599; // 2026-12-31 23:59:59 EST
+const HOLIDAY_REGULAR_CENTS = 15000;
+const HOLIDAY_SALE_CENTS = 9900;
+const HOLIDAY_SAVINGS_CENTS = HOLIDAY_REGULAR_CENTS - HOLIDAY_SALE_CENTS;
+function holidaySaleWindowActive(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Indiana/Indianapolis', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(now).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+  const clock = [parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second].join('');
+  return clock >= '20261101000000' && clock < '20270101000000';
+}
+function holidayCouponValid(coupon) {
+  if (!coupon || coupon.id !== HOLIDAY_COUPON_ID || !coupon.valid ||
+      coupon.amount_off !== HOLIDAY_SAVINGS_CENTS || coupon.currency !== 'usd' ||
+      coupon.duration !== 'once' || coupon.redeem_by !== HOLIDAY_COUPON_REDEEM_BY ||
+      coupon.metadata?.product_id !== SLENDERIIZ_PRODUCT_ID) return false;
+  const productRestrictions = coupon.applies_to?.products;
+  return !Array.isArray(productRestrictions) || productRestrictions.includes(SLENDERIIZ_PRODUCT_ID);
+}
+function discountedSubaruUnitCents(unitCents) {
+  return Math.round(unitCents * 0.85);
+}
+function discountedLine(price, unitCents, quantity) {
+  const product = typeof price.product === 'string' ? price.product : price.product?.id;
+  if (!product) throw new Error('missing_product_for_discounted_line');
+  const priceData = { currency: 'usd', product, unit_amount: unitCents };
+  if (price.tax_behavior === 'inclusive' || price.tax_behavior === 'exclusive') {
+    priceData.tax_behavior = price.tax_behavior;
+  }
+  return { price_data: priceData, quantity };
+}
+
 const FREE_OVER_CENTS = 12500;
 const STANDARD_CENTS = 895;
 const ALLOWED_PRICE_IDS = new Set([
@@ -26,4 +64,8 @@ function isLocalDelivery(lat,lon) {
  if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat< -90||lat>90||lon< -180||lon>180) return false;
  return CENTERS.some(center=>milesBetween(center,{lat,lon})<=15);
 }
-module.exports={ALLOWED_PRICE_IDS,validateItems,shippingOptions,milesBetween,isLocalDelivery};
+module.exports={ALLOWED_PRICE_IDS,validateItems,shippingOptions,milesBetween,isLocalDelivery,
+  SLENDERIIZ_PRICE_ID, SLENDERIIZ_PRODUCT_ID, HOLIDAY_COUPON_ID,
+  HOLIDAY_COUPON_REDEEM_BY, HOLIDAY_REGULAR_CENTS, HOLIDAY_SALE_CENTS,
+  HOLIDAY_SAVINGS_CENTS, holidaySaleWindowActive, holidayCouponValid,
+  discountedSubaruUnitCents, discountedLine};
