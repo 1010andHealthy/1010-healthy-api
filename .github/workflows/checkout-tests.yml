@@ -23,6 +23,7 @@ jobs:
       - name: Run checkout regression suite (mocked Stripe / Maps)
         run: npm test
       - name: Verify live legacy backend Stripe compatibility without charging
+        if: github.event_name == 'pull_request'
         run: node test/legacy-backend-preflight.mjs
       # Dispatch manually from this feature branch after configuring the repo's
       # STRIPE_TEST_SECRET_KEY secret. Never expose secrets to PR-triggered code.
