@@ -33,6 +33,13 @@ for(const [qty,subtotal,ship,total] of expected){
   else console.log('No buy/add button found');
   await page.waitForTimeout(2500);
   if(!seen.length){
+    // Buy Now leads first to /shop/cart. Proceed from cart to the contact form.
+    if(page.url().includes('/shop/cart')){
+      const fromCart=page.getByRole('button',{name:/checkout|proceed to checkout/i});
+      const fromCartLink=page.getByRole('link',{name:/checkout|proceed to checkout/i});
+      if(await fromCart.count())await fromCart.first().click();
+      else if(await fromCartLink.count())await fromCartLink.first().click();
+    }
     await page.waitForURL(/\/shop\/checkout(?:\?|$)/,{timeout:12000}).catch(()=>{});
     console.log('FORM_PREP qty='+qty+' url='+page.url());
     if(page.url().includes('/shop/checkout')){
