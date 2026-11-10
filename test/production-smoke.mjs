@@ -9,7 +9,7 @@ const prices = {
   sixtyFive: 'price_1U9pFQGaIkBjCnN2nD8BYKvB'
 };
 const inLafayette = { line1:'20 N 6th St', city:'Lafayette',state:'IN',postalCode:'47901' };
-const inWestLafayette = { line1:'101 N Grant St',city:'West Lafayette',state:'IN',postalCode:'47906' };
+const inWestLafayette = { line1:'208 W Columbia St',city:'West Lafayette',state:'IN',postalCode:'47906' };
 const outside = { line1:'200 E Washington St',city:'Indianapolis',state:'IN',postalCode:'46204' };
 const unknown = { line1:'999999 Impossible Mystery Road',city:'Lafayette',state:'IN',postalCode:'47901' };
 
@@ -83,7 +83,7 @@ await accepted('$140 SUBARU15 => $119 + $8.95 shipping',
 await accepted('Lafayette street address => free local delivery',
   cart(prices.exactly125,1,'local_delivery',{deliveryAddress:inLafayette}),{amount:12500,shipping:0,address:'20 N 6th St'});
 await accepted('West Lafayette street address => free local delivery',
-  cart(prices.sixtyFive,1,'local_delivery',{deliveryAddress:inWestLafayette}),{amount:6500,shipping:0,address:'101 N Grant St'});
+  cart(prices.sixtyFive,1,'local_delivery',{deliveryAddress:inWestLafayette}),{amount:6500,shipping:0,address:'208 W Columbia St'});
 await accepted('different local delivery address overrides other customer metadata',
   cart(prices.sixtyFive,1,'local_delivery',{deliveryAddress:inLafayette,metadata:{notes:'original order address was elsewhere'}}),{amount:6500,shipping:0,address:'20 N 6th St'});
 await rejected('Indianapolis address outside both 15-mile circles',
@@ -116,15 +116,15 @@ if (holidayStatus?.saleActive){
       {amount:expectedSub+ship,subtotal:expectedSub,shipping:ship});
     const created=await post(c);
     const session=await details(created);
-    expect('HOLIDAY '+qty+' Stripe line item equals $99 unit',session?.line_items?.data?.[0]?.price?.unit_amount===9900
+    expect('HOLIDAY '+qty+' Stripe line item equals $99 unit',session?.line_items?.[0]?.price?.unit_amount===9900
       && session?.metadata?.holiday_offer==='HOLIDAY2026_SLENDERIIZ_51',
-      'Stripe unit='+session?.line_items?.data?.[0]?.price?.unit_amount);
+      'Stripe unit='+session?.line_items?.[0]?.price?.unit_amount);
   }
   const mixed={items:[{priceId:holidayPriceId,quantity:1},{priceId:'price_1U9pFPGaIkBjCnN2xWaDfZG8',quantity:1}],
     fulfillment:'ship',discountCode:'SUBARU15'};
   const mixedResponse=await post(mixed);
   const mixedSession=await details(mixedResponse);
-  const mixedLines=mixedSession?.line_items?.data || [];
+  const mixedLines=mixedSession?.line_items || [];
   const slenderLine=mixedLines.find(x=>x.price?.product==='prod_VA6ZFPxC17XZAv'
     || x.price?.product?.id==='prod_VA6ZFPxC17XZAv');
   expect('HOLIDAY mixed SUBARU15 never discounts Slenderiiz below $99',
