@@ -33,7 +33,7 @@ app.use(express.json());
 
 // ─── HEALTH CHECK ────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: '10:10 and Healthy API', checkout_revision: 'local-delivery-v1', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', service: '10:10 and Healthy API', checkout_revision: 'slenderiiz-holiday-v1', timestamp: new Date().toISOString() });
 });
 
 app.get('/', (req, res) => {
@@ -158,7 +158,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
     if (discountCode != null && String(discountCode).trim()) {
       const code = String(discountCode).trim().toUpperCase();
       if (code === 'SUBARU15') {
-        const coupon = await stripe.coupons.retrieve('eBftR5rn');
+        const coupon = await stripe.coupons.retrieve(process.env.NODE_ENV === 'test' && process.env.TEST_SUBARU_COUPON_ID ? process.env.TEST_SUBARU_COUPON_ID : 'eBftR5rn');
         if (!coupon.valid || coupon.percent_off !== 15) {
           return bad('inactive_discount', 'SUBARU15 is temporarily unavailable.');
         }
