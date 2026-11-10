@@ -33,11 +33,21 @@ for(const [qty,subtotal,ship,total] of expected){
   else console.log('No buy/add button found');
   await page.waitForTimeout(2500);
   if(!seen.length){
-    const checkout=page.getByRole('button',{name:/checkout|proceed to checkout/i});
-    const checkoutLink=page.getByRole('link',{name:/checkout|proceed to checkout/i});
+    if(page.url().includes('/shop/checkout')){
+      console.log('FORM_FIELDS '+JSON.stringify(await page.locator('input,select').evaluateAll(els=>els.map(x=>({tag:x.tagName,name:x.name,id:x.id,placeholder:x.placeholder,type:x.type})))));
+      await page.getByLabel(/First Name/i).fill('Unpaid QA');
+      await page.getByLabel(/Last Name/i).fill('Verification');
+      await page.getByLabel(/^Email/i).fill('unpaid-qa-'+qty+'@example.com');
+      await page.getByLabel(/Street Address/i).fill('20 N 6th St');
+      await page.getByLabel(/^City/i).fill('Lafayette');
+      await page.getByLabel(/^State/i).selectOption('IN');
+      await page.getByLabel(/ZIP Code/i).fill('47901');
+    }
+    const checkout=page.getByRole('button',{name:/continue to payment|checkout|proceed to checkout/i});
+    const checkoutLink=page.getByRole('link',{name:/continue to payment|checkout|proceed to checkout/i});
     if(await checkout.count())await checkout.first().click();
     else if(await checkoutLink.count())await checkoutLink.first().click();
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(4000);
   }
   console.log('AFTER CLICK qty='+qty+' url='+page.url()+' buttons='+JSON.stringify((await page.locator('button').allTextContents()).map(x=>x.trim()).filter(Boolean).slice(0,25)));
   console.log('PAYLOAD qty='+qty+' '+JSON.stringify(reqs).slice(0,1500));
