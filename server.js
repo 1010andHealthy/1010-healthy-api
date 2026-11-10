@@ -411,13 +411,19 @@ async function handleCheckoutCompleted(session) {
   const orderTotal = ((session.amount_total || 0) / 100).toFixed(2);
   const orderNotes = session.metadata?.order_notes || '';
   const phone = session.metadata?.customer_phone || '';
+  const holidayOrder = (fullSession.metadata?.holiday_offer || session.metadata?.holiday_offer) === HOLIDAY_COUPON_ID;
+  const holidayItemLabel = item => {
+    const product = item.price?.product;
+    const productId = typeof product === 'string' ? product : product?.id;
+    return holidayOrder && productId === SLENDERIIZ_PRODUCT_ID ? ' (Holiday Special: $99 each)' : '';
+  };
 
   // Build items list
   const itemsText = lineItems.map(item => {
     const name = typeof item.price?.product === 'object' ? item.price.product.name : 'Product';
     const qty = item.quantity;
     const amount = ((item.amount_total || 0) / 100).toFixed(2);
-    return `${name} × ${qty} — $${amount}`;
+    return `${name}${holidayItemLabel(item)} × ${qty} — ${amount}`;
   }).join('\n');
 
   const itemsHtml = lineItems.map(item => {
@@ -425,7 +431,7 @@ async function handleCheckoutCompleted(session) {
     const qty = item.quantity;
     const amount = ((item.amount_total || 0) / 100).toFixed(2);
     return `<tr>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee;">${name}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee;">${name}${holidayItemLabel(item)}</td>
       <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">${qty}</td>
       <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">$${amount}</td>
     </tr>`;
