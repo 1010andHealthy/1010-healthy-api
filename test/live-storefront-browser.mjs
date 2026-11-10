@@ -33,6 +33,8 @@ for(const [qty,subtotal,ship,total] of expected){
   else console.log('No buy/add button found');
   await page.waitForTimeout(2500);
   if(!seen.length){
+    await page.waitForURL(/\/shop\/checkout(?:\?|$)/,{timeout:12000}).catch(()=>{});
+    console.log('FORM_PREP qty='+qty+' url='+page.url());
     if(page.url().includes('/shop/checkout')){
       console.log('FORM_FIELDS '+JSON.stringify(await page.locator('input,select').evaluateAll(els=>els.map(x=>({tag:x.tagName,name:x.name,id:x.id,placeholder:x.placeholder,type:x.type})))));
       await page.getByLabel(/First Name/i).fill('Unpaid QA');
