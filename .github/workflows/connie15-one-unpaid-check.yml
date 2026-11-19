@@ -1,0 +1,78 @@
+name: CONNIE15 one unpaid live checkout verification
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/connie15-one-unpaid-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Create exactly one unpaid checkout session and verify Stripe read-back
+        env:
+          API_URL: https://1010-healthy-api-production-b8c3.up.railway.app
+        run: |
+          node --input-type=module <<'JS'
+          const body = {
+            items: [
+              { priceId: 'price_1U9pFSGaIkBjCnN2aLUlDGrl', quantity: 1 },
+              { priceId: 'price_1U9pFXGaIkBjCnN2lRBNqkKr', quantity: 1 }
+            ],
+            fulfillment: 'ship',
+            discountCode: 'CONNIE15'
+          };
+          const base = process.env.API_URL;
+          const create = await fetch(base+'/api/create-checkout-session', {
+            method:'POST', headers:{'content-type':'application/json'},
+            body:JSON.stringify(body), signal:AbortSignal.timeout(18000)
+          });
+          const created = await create.json();
+          if (create.status !== 200 || !created.clientSecret) {
+            console.error('FAIL: checkout creation',create.status,JSON.stringify(created));
+            process.exit(1);
+          }
+          const sid = created.clientSecret.split('_secret_')[0];
+          if (!sid.startsWith('cs_')) throw Error('Invalid checkout session identifier');
+          const read = await fetch(base+'/api/checkout-session/'+encodeURIComponent(sid), {
+            signal:AbortSignal.timeout(18000)
+          });
+          const session = await read.json();
+          if (!read.ok) throw Error('Failed to read Stripe session '+read.status);
+          const items = (session.line_items||[]).map(x=>({
+            name:x.description,
+            product:typeof x.price?.product==='string'?x.price.product:x.price?.product?.id,
+            quantity:x.quantity,
+            unit_amount:x.price?.unit_amount,
+            amount_total:x.amount_total
+          }));
+          const summary = {
+            id:sid,
+            payment_status:session.payment_status,
+            amount_total:session.amount_total,
+            amount_subtotal:session.amount_subtotal,
+            amount_tax:session.total_details?.amount_tax ?? 0,
+            shipping:session.shipping_cost?.amount_total ?? null,
+            promo:session.metadata?.discount_code_entered,
+            holiday:session.metadata?.holiday_offer,
+            lines:items
+          };
+          console.log('CHECKOUT_RESULT',JSON.stringify(summary));
+          const slender=items.find(x=>x.product==='prod_VA6ZFPxC17XZAv');
+          const renew=items.find(x=>x.product==='prod_VA6bQY5cdsPQLm');
+          if(session.payment_status!=='unpaid' ||
+             session.amount_total!==20950 ||
+             session.shipping_cost?.amount_total!==0 ||
+             slender?.unit_amount!==9900 ||
+             renew?.unit_amount!==11050 ||
+             session.metadata?.discount_code_entered!=='CONNIE15' ||
+             items.length!==2) {
+            throw Error('Live backend/Stripe session did not match currently configured $130 Renew catalog pricing.');
+          }
+          console.log('PASS: Unpaid. Slenderiiz $99.00, Renew $130.00 less 15% ($19.50) => $110.50. Free shipping. Total $209.50 before tax.');
+          console.log('IMPORTANT: Requested $158.46 presupposes Renew $69.95; this is not the configured website/Stripe price.');
+          JS
