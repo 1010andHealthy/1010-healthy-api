@@ -14,7 +14,7 @@ const priceCents = new Map([
   ['price_1U9pFSGaIkBjCnN26JtUQLGm', 13000]
 ]);
 
-function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0, swimCouponValid = true, swimPromoActive = true, holidayCouponValid = true, nowISO = '2026-10-20T12:00:00-04:00' } = {}) {
+function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0, swimCouponValid = true, swimPromoActive = true, holidayCouponValid = true, connieCouponValid = true, conniePromoActive = true, nowISO = '2026-10-20T12:00:00-04:00' } = {}) {
   const routes = new Map();
   const app = {
     use() {},
@@ -39,6 +39,9 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
       redeem_by: policy.HOLIDAY_COUPON_REDEEM_BY,
       metadata: { product_id: policy.SLENDERIIZ_PRODUCT_ID },
       applies_to: { products:[policy.SLENDERIIZ_PRODUCT_ID] },
+    }) : id === 'CONNIE15_NONSLENDERIIZ_2026' ? ({
+      id, valid: connieCouponValid, percent_off:15, duration:'once',
+      redeem_by:1798779599
     }) : id === 'SWIM15_MAX2_20261025' ? ({
       id, valid: swimCouponValid, percent_off:15, duration:'once',
       max_redemptions:null, redeem_by:1792987199
@@ -46,7 +49,11 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
       id, valid: couponValid, percent_off: 15, duration: 'once'
     }) },
     promotionCodes: {
-      list: async () => ({ data: [{
+      list: async ({code}={}) => ({ data: code === 'CONNIE15' ? [{
+        id:'promo_connie15_mock', code:'CONNIE15', active:conniePromoActive,
+        promotion:{type:'coupon',coupon:'CONNIE15_NONSLENDERIIZ_2026'},
+        max_redemptions:null, expires_at:1798779599, times_redeemed:0
+      }] : [{
         id:'promo_new_swim15_mock', code:'SWIM15', active:swimPromoActive,
         promotion:{type:'coupon',coupon:'SWIM15_MAX2_20261025'},
         max_redemptions:null, expires_at:1792987199, times_redeemed:0
@@ -517,4 +524,54 @@ test('holiday eligible local delivery stays free',async()=>{
   assert.equal(r.statusCode,200);
   assert.equal(cents(r),0);
   assert.equal(stripeLineAmount(r.session.line_items[0]),9900);
+});
+
+test('CONNIE15 keeps Slenderiiz $99 while discounting all other line items 15%',async()=>{
+  const regularId = ids[4]; // $100 fixture
+  const r = await holiday('2026-11-19T15:00:00-05:00').submit({
+    items:[{priceId:slender,quantity:1},{priceId:regularId,quantity:2}],
+    fulfillment:'ship',discountCode:'connie15',
+  });
+  assert.equal(r.statusCode,200);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),9900);
+  assert.equal(stripeLineAmount(r.session.line_items[1]),8500);
+  assert.equal(r.session.line_items[1].quantity,2);
+  assert.equal(r.session.discounts,undefined);
+  assert.equal(r.session.metadata.holiday_savings_cents,'5100');
+  assert.equal(r.session.metadata.nonholiday_discount_cents,'3000');
+  assert.equal(r.session.metadata.discount_code_entered,'CONNIE15');
+  assert.equal(cents(r),0);
+});
+
+test('CONNIE15 works on other items without requiring a Slenderiiz purchase',async()=>{
+  const r = await holiday('2026-12-31T23:59:58-05:00').submit(ship(ids[4],'CONNIE15'));
+  assert.equal(r.statusCode,200);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),8500);
+  assert.equal(cents(r),895);
+  assert.equal(r.session.metadata.nonholiday_discount_cents,'1500');
+});
+
+test('CONNIE15 does not discount holiday Slenderiiz by itself',async()=>{
+  const h=holiday('2026-12-11T12:00:00-05:00');
+  const r=await h.submit(oneSlender(1,'CONNIE15'));
+  assert.equal(r.statusCode,400);
+  assert.match(r.response.error,/other than Slenderiiz/i);
+  assert.equal(h.sessions.length,0);
+});
+
+test('CONNIE15 ends at midnight January 1 Indiana time and rejects invalid Stripe offers',async()=>{
+  for(const date of ['2026-10-31T23:59:59-04:00','2027-01-01T00:00:00-05:00']){
+    const h=holiday(date);
+    const r=await h.submit(ship(ids[4],'CONNIE15'));
+    assert.equal(r.statusCode,400);
+    assert.match(r.response.error,/December 31/i);
+    assert.equal(h.sessions.length,0);
+  }
+  for(const badOffer of [{connieCouponValid:false},{conniePromoActive:false}]){
+    const h=holiday('2026-11-19T15:00:00-05:00',badOffer);
+    const r=await h.submit(ship(ids[4],'CONNIE15'));
+    assert.equal(r.statusCode,400);
+    assert.match(r.response.error,/unavailable/i);
+    assert.equal(h.sessions.length,0);
+  }
 });
