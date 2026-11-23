@@ -1,0 +1,100 @@
+name: CONNIE30 one unpaid production checkout verification
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/connie30-one-unpaid-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Gate on CONNIE30 backend deployment then verify one unpaid live Stripe session
+        env:
+          API_URL: https://1010-healthy-api-production-b8c3.up.railway.app
+        run: |
+          node --input-type=module <<'JS'
+          const base=process.env.API_URL;
+          const slenderId='price_1U9pFSGaIkBjCnN2aLUlDGrl';
+          const renewId='price_1U9pFXGaIkBjCnN2lRBNqkKr';
+          const rejuveniixId='price_1U9pFSGaIkBjCnN2shv1Ilzv';
+          // A Slenderiiz-only CONNIE30 cart must return an explicit ineligibility error.
+          // This gate makes no Checkout Sessions or payment attempts.
+          let ready=false;
+          for (let i=0;i<60;i++){
+            try {
+              const r=await fetch(base+'/api/create-checkout-session',{
+                method:'POST',headers:{'content-type':'application/json'},
+                body:JSON.stringify({
+                  items:[{priceId:slenderId,quantity:1}],
+                  fulfillment:'ship',discountCode:'CONNIE30'
+                }),signal:AbortSignal.timeout(10000)
+              });
+              const result=await r.json();
+              if(r.status===400 && /CONNIE30 applies to products other than Slenderiiz Drops/i.test(result.error||'')){
+                ready=true;break;
+              }
+              if(r.status===200){throw Error('Slenderiiz-only cart unexpectedly accepted CONNIE30');}
+            }catch(e){
+              if(/unexpectedly accepted/.test(e.message))throw e;
+            }
+            await new Promise(resolve=>setTimeout(resolve,3000));
+          }
+          if(!ready)throw Error('CONNIE30 production checkout backend not yet verified');
+          console.log('PASS: CONNIE30 backend live. Creating exactly one unpaid checkout.');
+          const create=await fetch(base+'/api/create-checkout-session',{
+            method:'POST',headers:{'content-type':'application/json'},
+            body:JSON.stringify({
+              items:[
+                {priceId:slenderId,quantity:1},
+                {priceId:renewId,quantity:1},
+                {priceId:rejuveniixId,quantity:1}
+              ],
+              fulfillment:'ship',discountCode:'CONNIE30'
+            }),signal:AbortSignal.timeout(18000)
+          });
+          const created=await create.json();
+          if(create.status!==200 || !created.clientSecret)
+            throw Error('Checkout creation failed: HTTP '+create.status+' '+JSON.stringify(created));
+          const sid=created.clientSecret.split('_secret_')[0];
+          if(!sid.startsWith('cs_'))throw Error('Invalid checkout session identifier');
+          const response=await fetch(base+'/api/checkout-session/'+encodeURIComponent(sid),{
+            signal:AbortSignal.timeout(18000)
+          });
+          if(!response.ok)throw Error('Stripe session readback failed HTTP '+response.status);
+          const session=await response.json();
+          const lines=(session.line_items||[]).map(x=>({
+            product:typeof x.price?.product==='string'?x.price.product:x.price?.product?.id,
+            description:x.description,
+            quantity:x.quantity,
+            unit_amount:x.price?.unit_amount
+          }));
+          const amounts=new Map(lines.map(x=>[x.product,x.unit_amount]));
+          const actual={
+            session_id:sid, payment_status:session.payment_status,
+            amount_subtotal:session.amount_subtotal,
+            amount_total:session.amount_total,
+            shipping:session.shipping_cost?.amount_total,
+            tax:session.total_details?.amount_tax,
+            promo:session.metadata?.discount_code_entered,
+            holiday:session.metadata?.holiday_offer,
+            lines
+          };
+          console.log('CHECKOUT_RESULT',JSON.stringify(actual));
+          if(session.payment_status!=='unpaid'||
+             session.amount_total!==24600||
+             session.amount_subtotal!==24600||
+             (session.total_details?.amount_tax??0)!==0||
+             session.shipping_cost?.amount_total!==0||
+             lines.length!==3||
+             amounts.get('prod_VA6ZFPxC17XZAv')!==9900||
+             amounts.get('prod_VA6bQY5cdsPQLm')!==9100||
+             amounts.get('prod_VA6txSKUn0Iy6W')!==5600||
+             session.metadata?.discount_code_entered!=='CONNIE30')
+            throw Error('CONNIE30 unpaid live session totals incorrect');
+          console.log('PASS: Slenderiiz $99 + Renew $91 + Rejuveniix $56 = $246, tax $0, free shipping, UNPAID. No charges.');
+          JS
