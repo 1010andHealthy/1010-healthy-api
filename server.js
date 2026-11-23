@@ -155,7 +155,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
     let discountCents = 0;
     let discounts;
     let inlineSubaruPricing = false;
-    let inlineConniePricing = false;
+    let inlineConniePercentOff = 0;
     if (discountCode != null && String(discountCode).trim()) {
       const code = String(discountCode).trim().toUpperCase();
       if (code === 'SUBARU15') {
@@ -178,30 +178,32 @@ app.post('/api/create-checkout-session', async (req, res) => {
           discountCents = Math.round(subtotalCents * 0.15);
           discounts = [{ coupon: coupon.id }];
         }
-      } else if (code === 'CONNIE15') {
-        // Connie's holiday code discounts every non-Slenderiiz product by 15%.
+      } else if (code === 'CONNIE15' || code === 'CONNIE30') {
+        // Connie's holiday codes discount non-Slenderiiz products at their respective rates.
         // The $99 holiday price on Slenderiiz must remain untouched. We use
         // server-priced line items rather than a session-wide Stripe discount
         // to guarantee that mixed carts never get an extra discount on drops.
-        const expectedCouponId = 'CONNIE15_NONSLENDERIIZ_2026';
+        const percentOff = code === 'CONNIE30' ? 30 : 15;
+        const expectedCouponId = code === 'CONNIE30'
+          ? 'CONNIE30_NONSLENDERIIZ_2026' : 'CONNIE15_NONSLENDERIIZ_2026';
         const expectedExpiration = 1798779599; // Dec 31 2026, 23:59:59 EST
         if (!holidaySaleWindowActive(new Date(Date.now()))) {
-          return bad('connie15_expired', 'CONNIE15 is valid only through December 31, 2026.');
+          return bad('connie_expired', `${code} is valid only through December 31, 2026.`);
         }
         const [coupon, promoList] = await Promise.all([
           stripe.coupons.retrieve(expectedCouponId),
-          stripe.promotionCodes.list({ code: 'CONNIE15', active: true, limit: 100 }),
+          stripe.promotionCodes.list({ code, active: true, limit: 100 }),
         ]);
         const promo = promoList.data.find(p => {
           const reference = p.promotion?.coupon ?? p.coupon;
           const id = typeof reference === 'string' ? reference : reference?.id;
           return id === expectedCouponId;
         });
-        if (!coupon.valid || coupon.percent_off !== 15 ||
+        if (!coupon.valid || coupon.percent_off !== percentOff ||
             coupon.duration !== 'once' || coupon.redeem_by !== expectedExpiration ||
-            !promo || !promo.active || promo.code?.toUpperCase() !== 'CONNIE15' ||
+            !promo || !promo.active || promo.code?.toUpperCase() !== code ||
             promo.expires_at !== expectedExpiration) {
-          return bad('connie15_unavailable', 'CONNIE15 is currently unavailable.');
+          return bad('connie_unavailable', `${code} is currently unavailable.`);
         }
         const eligibleItems = items.filter(i => {
           const product = priceById.get(i.priceId).product;
@@ -209,8 +211,8 @@ app.post('/api/create-checkout-session', async (req, res) => {
           return id !== SLENDERIIZ_PRODUCT_ID;
         });
         if (!eligibleItems.length) {
-          return bad('connie15_no_eligible_products',
-            'CONNIE15 applies to products other than Slenderiiz Drops.');
+          return bad('connie_no_eligible_products',
+            `${code} applies to products other than Slenderiiz Drops.`);
         }
         const allowedProducts = coupon.applies_to?.products;
         if (Array.isArray(allowedProducts) && eligibleItems.some(i => {
@@ -218,12 +220,12 @@ app.post('/api/create-checkout-session', async (req, res) => {
           const id = typeof product === 'string' ? product : product?.id;
           return !allowedProducts.includes(id);
         })) {
-          return bad('connie15_ineligible_product', 'A product in your cart is not eligible for CONNIE15.');
+          return bad('connie_ineligible_product', `A product in your cart is not eligible for ${code}.`);
         }
-        inlineConniePricing = true;
+        inlineConniePercentOff = percentOff;
         discountCents = eligibleItems.reduce((sum, i) => {
           const unitCents = priceById.get(i.priceId).unit_amount;
-          return sum + (unitCents - discountedSubaruUnitCents(unitCents)) * i.quantity;
+          return sum + (unitCents - Math.round(unitCents * (100 - percentOff) / 100)) * i.quantity;
         }, 0);
       } else if (code === 'BABYGIRL37') {
         // Unique one-time offer. Never discount another product or an altered cart.
@@ -311,8 +313,11 @@ app.post('/api/create-checkout-session', async (req, res) => {
           return discountedLine(price, HOLIDAY_SALE_CENTS, i.quantity);
         }
         const product = typeof price.product === 'string' ? price.product : price.product?.id;
-        if (inlineSubaruPricing || (inlineConniePricing && product !== SLENDERIIZ_PRODUCT_ID)) {
-          return discountedLine(price, discountedSubaruUnitCents(price.unit_amount), i.quantity);
+        if (inlineSubaruPricing || (inlineConniePercentOff && product !== SLENDERIIZ_PRODUCT_ID)) {
+          const unitCents = inlineSubaruPricing
+            ? discountedSubaruUnitCents(price.unit_amount)
+            : Math.round(price.unit_amount * (100 - inlineConniePercentOff) / 100);
+          return discountedLine(price, unitCents, i.quantity);
         }
         return { price: i.priceId, quantity: i.quantity };
       }),
