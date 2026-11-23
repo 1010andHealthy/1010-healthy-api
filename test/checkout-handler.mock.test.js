@@ -11,10 +11,12 @@ const priceCents = new Map([
   [ids[0], 12500], [ids[1], 12501], [ids[2], 14000],
   [ids[3], 15000], [ids[4], 10000], ['price_1U9pFPGaIkBjCnN2doJXxoX9', 6000],
   ['price_1U9pFQGaIkBjCnN2nD8BYKvB', 6500],
-  ['price_1U9pFSGaIkBjCnN26JtUQLGm', 13000]
+  ['price_1U9pFSGaIkBjCnN26JtUQLGm', 13000],
+  ['price_1U9pFXGaIkBjCnN2lRBNqkKr', 13000],
+  ['price_1U9pFSGaIkBjCnN2shv1Ilzv', 8000]
 ]);
 
-function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0, swimCouponValid = true, swimPromoActive = true, holidayCouponValid = true, connieCouponValid = true, conniePromoActive = true, nowISO = '2026-10-20T12:00:00-04:00' } = {}) {
+function harness({ geocoding = 'local', couponValid = true, babyCouponValid = true, babyPromoActive = true, babyTimesRedeemed = 0, swimCouponValid = true, swimPromoActive = true, holidayCouponValid = true, connieCouponValid = true, conniePromoActive = true, connie30CouponValid = true, connie30PromoActive = true, nowISO = '2026-10-20T12:00:00-04:00' } = {}) {
   const routes = new Map();
   const app = {
     use() {},
@@ -42,6 +44,9 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
     }) : id === 'CONNIE15_NONSLENDERIIZ_2026' ? ({
       id, valid: connieCouponValid, percent_off:15, duration:'once',
       redeem_by:1798779599
+    }) : id === 'CONNIE30_NONSLENDERIIZ_2026' ? ({
+      id, valid: connie30CouponValid, percent_off:30, duration:'once',
+      redeem_by:1798779599
     }) : id === 'SWIM15_MAX2_20261025' ? ({
       id, valid: swimCouponValid, percent_off:15, duration:'once',
       max_redemptions:null, redeem_by:1792987199
@@ -52,6 +57,10 @@ function harness({ geocoding = 'local', couponValid = true, babyCouponValid = tr
       list: async ({code}={}) => ({ data: code === 'CONNIE15' ? [{
         id:'promo_connie15_mock', code:'CONNIE15', active:conniePromoActive,
         promotion:{type:'coupon',coupon:'CONNIE15_NONSLENDERIIZ_2026'},
+        max_redemptions:null, expires_at:1798779599, times_redeemed:0
+      }] : code === 'CONNIE30' ? [{
+        id:'promo_connie30_mock', code:'CONNIE30', active:connie30PromoActive,
+        promotion:{type:'coupon',coupon:'CONNIE30_NONSLENDERIIZ_2026'},
         max_redemptions:null, expires_at:1798779599, times_redeemed:0
       }] : [{
         id:'promo_new_swim15_mock', code:'SWIM15', active:swimPromoActive,
@@ -570,6 +579,78 @@ test('CONNIE15 ends at midnight January 1 Indiana time and rejects invalid Strip
   for(const badOffer of [{connieCouponValid:false},{conniePromoActive:false}]){
     const h=holiday('2026-11-19T15:00:00-05:00',badOffer);
     const r=await h.submit(ship(ids[4],'CONNIE15'));
+    assert.equal(r.statusCode,400);
+    assert.match(r.response.error,/unavailable/i);
+    assert.equal(h.sessions.length,0);
+  }
+});
+
+test('CONNIE30 three-product cart is exactly $246, no shipping or tax',async()=>{
+  const renewId='price_1U9pFXGaIkBjCnN2lRBNqkKr';
+  const rejuveniixId='price_1U9pFSGaIkBjCnN2shv1Ilzv';
+  const r=await holiday('2026-11-23T09:35:00-05:00').submit({
+    items:[
+      {priceId:slender,quantity:1},
+      {priceId:renewId,quantity:1},
+      {priceId:rejuveniixId,quantity:1}
+    ],fulfillment:'ship',discountCode:'connie30'
+  });
+  assert.equal(r.statusCode,200);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),9900);
+  assert.equal(stripeLineAmount(r.session.line_items[1]),9100);
+  assert.equal(stripeLineAmount(r.session.line_items[2]),5600);
+  assert.equal(cents(r),0);
+  assert.equal(r.session.automatic_tax.enabled,false);
+  assert.equal(r.session.discounts,undefined);
+  assert.equal(r.session.metadata.nonholiday_discount_cents,'6300');
+  assert.equal(r.session.metadata.holiday_savings_cents,'5100');
+  assert.equal(r.session.metadata.discount_code_entered,'CONNIE30');
+});
+
+test('CONNIE30 gives per-unit 30% off optional products and never stacks on Slenderiiz',async()=>{
+  const renewId='price_1U9pFXGaIkBjCnN2lRBNqkKr';
+  const r=await holiday('2026-12-30T10:00:00-05:00').submit({
+    items:[{priceId:slender,quantity:2},{priceId:renewId,quantity:2}],
+    fulfillment:'ship',discountCode:'CONNIE30'
+  });
+  assert.equal(r.statusCode,200);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),9900);
+  assert.equal(stripeLineAmount(r.session.line_items[1]),9100);
+  assert.equal(r.session.line_items[0].quantity,2);
+  assert.equal(r.session.line_items[1].quantity,2);
+  assert.equal(r.session.metadata.nonholiday_discount_cents,'7800');
+  assert.equal(cents(r),0);
+});
+
+test('CONNIE30 requires at least one non-Slenderiiz item',async()=>{
+  const h=holiday('2026-11-24T11:00:00-05:00');
+  const r=await h.submit(oneSlender(1,'CONNIE30'));
+  assert.equal(r.statusCode,400);
+  assert.match(r.response.error,/other than Slenderiiz/i);
+  assert.equal(h.sessions.length,0);
+});
+
+test('CONNIE30 works without Slenderiiz and respects $125 post-discount threshold',async()=>{
+  const renewId='price_1U9pFXGaIkBjCnN2lRBNqkKr';
+  const h=holiday('2026-12-31T23:59:58-05:00');
+  const r=await h.submit(ship(renewId,'CONNIE30'));
+  assert.equal(r.statusCode,200);
+  assert.equal(stripeLineAmount(r.session.line_items[0]),9100);
+  assert.equal(cents(r),895);
+  assert.equal(r.session.metadata.nonholiday_discount_cents,'3900');
+});
+
+test('CONNIE30 date boundaries and Stripe offer validation are enforced',async()=>{
+  for (const date of ['2026-10-31T23:59:59-04:00','2027-01-01T00:00:00-05:00']){
+    const h=holiday(date);
+    const r=await h.submit(ship(ids[4],'CONNIE30'));
+    assert.equal(r.statusCode,400);
+    assert.match(r.response.error,/December 31/i);
+    assert.equal(h.sessions.length,0);
+  }
+  for (const badOffer of [{connie30CouponValid:false},{connie30PromoActive:false}]){
+    const h=holiday('2026-11-23T10:00:00-05:00',badOffer);
+    const r=await h.submit(ship(ids[4],'CONNIE30'));
     assert.equal(r.statusCode,400);
     assert.match(r.response.error,/unavailable/i);
     assert.equal(h.sessions.length,0);
