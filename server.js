@@ -458,6 +458,37 @@ app.get('/api/checkout-session/:sessionId', async (req, res) => {
 });
 
 // ─── STRIPE WEBHOOK HANDLER ──────────────────────────────────────────────────
+// Persist paid Stripe checkouts before sending existing order notifications.
+// The private service-role key must be configured only on the production server.
+async function syncStripeBuyer(session) {
+  if (!session.livemode || session.payment_status !== 'paid') return;
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error('CRM configuration missing');
+  const full = await stripe.checkout.sessions.retrieve(session.id);
+  const m = full.metadata || {};
+  const d = full.customer_details || {};
+  const names = (d.name || '').trim().split(/\s+/);
+  const shipping = checkoutShippingDetails(full);
+  const attribution = Object.fromEntries(Object.entries(m).filter(([k]) =>
+    /^utm_|^(source|promo_code|partner_group|partner_code|discount_code_entered)$/.test(k)));
+  const payload = {
+    p_session_id: full.id, p_email: d.email || full.customer_email,
+    p_first_name: m.customer_first_name || names[0] || '',
+    p_last_name: m.customer_last_name || names.slice(1).join(' '),
+    p_phone: d.phone || m.customer_phone || null,
+    p_shipping: shipping?.address || (m.delivery_address ? {delivery_address:m.delivery_address} : null),
+    p_utm: attribution, p_purchased_at: new Date(full.created * 1000).toISOString(),
+    p_amount: full.amount_total, p_currency: full.currency,
+    p_customer_id: typeof full.customer === 'string' ? full.customer : null,
+  };
+  const response = await fetch(url.replace(/\/$/, '') + '/rest/v1/rpc/upsert_stripe_buyer', {
+    method:'POST', headers:{apikey:key, Authorization:'Bearer '+key, 'Content-Type':'application/json'},
+    body:JSON.stringify(payload), signal:AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error('CRM write failed: HTTP ' + response.status);
+}
+
 async function handleWebhook(req, res) {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -481,6 +512,12 @@ async function handleWebhook(req, res) {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object;
+        try {
+          await syncStripeBuyer(session);
+        } catch (crmError) {
+          console.error('Stripe CRM sync failed', session.id, crmError.message);
+          return res.status(503).json({error:'CRM write failed; retry required'});
+        }
         await handleCheckoutCompleted(session);
         break;
       }
