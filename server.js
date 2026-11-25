@@ -113,7 +113,32 @@ app.post('/api/create-checkout-session', async (req, res) => {
     return res.status(400).json({ error: message, requestId });
   };
   try {
-    const { items, fulfillment, discountCode, customerEmail, metadata, deliveryAddress } = req.body || {};
+    const {
+      items, fulfillment, discountCode, promo_code: requestedPromoCode,
+      partner_group: requestedPartnerGroup, partner_code: requestedPartnerCode,
+      customerEmail, metadata, deliveryAddress,
+    } = req.body || {};
+    // The storefront may send either discountCode or promo_code. Never accept
+    // conflicting inputs (including metadata) as a way to stack discounts.
+    const codeValues = [discountCode, requestedPromoCode, metadata?.promo_code]
+      .filter(v => v != null && String(v).trim())
+      .map(v => String(v).trim().toUpperCase());
+    if (new Set(codeValues).size > 1) {
+      return bad('discount_not_stackable', 'Only one discount code can be applied.');
+    }
+    const normalizedCode = codeValues[0] || '';
+    const requestedPartner = requestedPartnerCode ?? metadata?.partner_code ?? '';
+    const suppliedPartnerCode = String(requestedPartner).trim().toUpperCase();
+    if ((normalizedCode === 'PBC10' && suppliedPartnerCode && suppliedPartnerCode !== 'PBC10') ||
+        (normalizedCode !== 'PBC10' && suppliedPartnerCode === 'PBC10')) {
+      return bad('discount_not_stackable', 'Partner discounts cannot be combined with another code.');
+    }
+    const partnerGroup = normalizedCode === 'PBC10'
+      ? 'Purdue Bodybuilding Club'
+      : String(requestedPartnerGroup ?? metadata?.partner_group ?? '')
+          .replace(/[^a-zA-Z0-9 &,.-]/g, '').slice(0, 80);
+    const partnerCode = normalizedCode === 'PBC10'
+      ? 'PBC10' : suppliedPartnerCode.replace(/[^A-Z0-9-]/g, '').slice(0, 40);
     log.itemCount = Array.isArray(items) ? items.length : 0;
     log.priceIds = Array.isArray(items) ? items.map(i => i?.priceId) : [];
     try { validateItems(items); } catch (err) {
@@ -156,9 +181,46 @@ app.post('/api/create-checkout-session', async (req, res) => {
     let discounts;
     let inlineSubaruPricing = false;
     let inlineConniePercentOff = 0;
-    if (discountCode != null && String(discountCode).trim()) {
-      const code = String(discountCode).trim().toUpperCase();
-      if (code === 'SUBARU15') {
+    let inlinePbcPricing = false;
+    if (normalizedCode) {
+      const code = normalizedCode;
+      if (code === 'PBC10') {
+        // The existing Stripe PBC10 coupon is unrestricted. In holiday mixed carts
+        // an ordinary session-wide promotion would also discount $99 Slenderiiz.
+        // Verify the existing promotion, then discount only non-holiday lines
+        // through server-calculated prices; never attach two coupons.
+        const [coupon, promo] = await Promise.all([
+          stripe.coupons.retrieve('PBC10_2026_2027'),
+          stripe.promotionCodes.retrieve('promo_1UfiBiGaIkBjCnN20zKeFApq'),
+        ]);
+        const reference = promo?.promotion?.coupon ?? promo?.coupon;
+        const promoCouponId = typeof reference === 'string' ? reference : reference?.id;
+        if (!coupon.valid || coupon.percent_off !== 10 || coupon.duration !== 'once' ||
+            !promo?.active || promo.code?.toUpperCase() !== 'PBC10' ||
+            promoCouponId !== coupon.id ||
+            (promo.max_redemptions != null && promo.times_redeemed >= promo.max_redemptions)) {
+          return bad('pbc10_unavailable', 'PBC10 is currently unavailable.');
+        }
+        const eligibleItems = items.filter(i => {
+          const price = priceById.get(i.priceId);
+          const productId = typeof price.product === 'string' ? price.product : price.product?.id;
+          return !(holidayActive && productId === SLENDERIIZ_PRODUCT_ID);
+        });
+        if (!eligibleItems.length) {
+          return bad('pbc10_no_eligible_products',
+            'PBC10 cannot discount Slenderiiz Drops during the holiday sale.');
+        }
+        if (holidayActive) {
+          inlinePbcPricing = true;
+          discountCents = eligibleItems.reduce((sum, i) => {
+            const unitCents = priceById.get(i.priceId).unit_amount;
+            return sum + (unitCents - Math.round(unitCents * 0.90)) * i.quantity;
+          }, 0);
+        } else {
+          discountCents = Math.round(subtotalCents * 0.10);
+          discounts = [{ promotion_code: promo.id }];
+        }
+      } else if (code === 'SUBARU15') {
         const coupon = await stripe.coupons.retrieve(process.env.NODE_ENV === 'test' && process.env.TEST_SUBARU_COUPON_ID ? process.env.TEST_SUBARU_COUPON_ID : 'eBftR5rn');
         if (!coupon.valid || coupon.percent_off !== 15) {
           return bad('inactive_discount', 'SUBARU15 is temporarily unavailable.');
@@ -313,10 +375,13 @@ app.post('/api/create-checkout-session', async (req, res) => {
           return discountedLine(price, HOLIDAY_SALE_CENTS, i.quantity);
         }
         const product = typeof price.product === 'string' ? price.product : price.product?.id;
-        if (inlineSubaruPricing || (inlineConniePercentOff && product !== SLENDERIIZ_PRODUCT_ID)) {
+        if (inlineSubaruPricing || inlinePbcPricing ||
+            (inlineConniePercentOff && product !== SLENDERIIZ_PRODUCT_ID)) {
           const unitCents = inlineSubaruPricing
             ? discountedSubaruUnitCents(price.unit_amount)
-            : Math.round(price.unit_amount * (100 - inlineConniePercentOff) / 100);
+            : inlinePbcPricing
+              ? Math.round(price.unit_amount * 0.90)
+              : Math.round(price.unit_amount * (100 - inlineConniePercentOff) / 100);
           return discountedLine(price, unitCents, i.quantity);
         }
         return { price: i.priceId, quantity: i.quantity };
@@ -341,8 +406,18 @@ app.post('/api/create-checkout-session', async (req, res) => {
         holiday_units: String(holidayUnits),
         holiday_savings_cents: String(holidaySavingsCents),
         nonholiday_discount_cents: String(discountCents),
-        discount_code_entered: discountCode ? String(discountCode).trim().toUpperCase().slice(0,40) : '',
+        discount_code_entered: normalizedCode.slice(0, 40),
+        promo_code: normalizedCode.slice(0, 40),
+        partner_group: partnerGroup,
+        partner_code: partnerCode,
       },
+      // Keep attribution on the payment as well as the Checkout Session so
+      // downstream Stripe order/CRM integrations can read it after payment.
+      payment_intent_data: { metadata: {
+        promo_code: normalizedCode.slice(0, 40),
+        partner_group: partnerGroup,
+        partner_code: partnerCode,
+      }},
       // Card-only Checkout: do not request Link's accelerated verification flow.
       payment_method_types: ['card'],
     };
@@ -465,6 +540,12 @@ async function handleCheckoutCompleted(session) {
   const orderTotal = ((session.amount_total || 0) / 100).toFixed(2);
   const orderNotes = session.metadata?.order_notes || '';
   const phone = session.metadata?.customer_phone || '';
+  const attribution = {
+    promo_code: fullSession.metadata?.promo_code || session.metadata?.promo_code || '',
+    partner_group: fullSession.metadata?.partner_group || session.metadata?.partner_group || '',
+    partner_code: fullSession.metadata?.partner_code || session.metadata?.partner_code || '',
+  };
+  console.info(JSON.stringify({ event: 'paid_order_attribution', sessionId: session.id, ...attribution }));
   const holidayOrder = (fullSession.metadata?.holiday_offer || session.metadata?.holiday_offer) === HOLIDAY_COUPON_ID;
   const holidayItemLabel = item => {
     const product = item.price?.product;
@@ -559,6 +640,9 @@ async function handleCheckoutCompleted(session) {
         <h3 style="margin:0 0 8px;font-size:14px;color:#333;">📝 Order Notes</h3>
         <p style="margin:0;font-size:14px;color:#444;">${orderNotes}</p>
       </div>` : ''}
+
+      <!-- Partner attribution, also retained in Stripe session / PaymentIntent -->
+      ${attribution.partner_group ? `<div style="background:#f0f9f1;border-radius:8px;padding:12px 20px;margin-bottom:16px;"><strong>Partner:</strong> ${attribution.partner_group}<br><strong>Code:</strong> ${attribution.partner_code || attribution.promo_code}</div>` : ''}
 
       <!-- Stripe Link -->
       <div style="text-align:center;margin-top:24px;">
